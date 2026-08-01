@@ -62,6 +62,7 @@ type Variant = {
   finalMaterials: string[] | null;
   shoppingLinks: ShoppingLink[];
   shoppingError: string | null;
+  shoppingLoading: boolean;
 };
 
 type Step = "idle" | "trend" | "concept" | "variants" | "done";
@@ -470,6 +471,7 @@ export default function Home() {
     index: number,
   ): Promise<Partial<Variant>> {
     const shoppingPatch: Partial<Variant> = {};
+    updateVariant(index, { shoppingLoading: true, shoppingError: null });
 
     await postJson("/api/shopping", { keyword: runKeyword, concept })
       .then((shoppingData) => {
@@ -479,12 +481,14 @@ export default function Home() {
           shoppingError: links.length
             ? null
             : "조건에 맞는 직접 상품 상세 링크를 찾지 못했어요.",
+          shoppingLoading: false,
         });
         updateVariant(index, shoppingPatch);
       })
       .catch((e) => {
         Object.assign(shoppingPatch, {
           shoppingError: e instanceof Error ? e.message : "구매 링크 검색 실패",
+          shoppingLoading: false,
         });
         updateVariant(index, shoppingPatch);
       });
@@ -492,17 +496,17 @@ export default function Home() {
     return shoppingPatch;
   }
 
-  async function attachShoppingLinks(runId: string, runKeyword: string, baseVariants: Variant[]) {
-    const shoppingPatches = await Promise.all(
-      baseVariants.map((variant, index) => runShoppingWork(runKeyword, variant.concept, index)),
+  async function findShoppingLinks(index: number) {
+    const variant = variants[index];
+    if (!variant || variant.shoppingLoading) return;
+    const patch = await runShoppingWork(keyword.trim(), variant.concept, index);
+    const nextVariants = variants.map((item, itemIndex) =>
+      itemIndex === index ? { ...item, ...patch } : item,
     );
-    if (activeRunIdRef.current !== runId) return;
-    const variantsWithShopping = baseVariants.map((variant, index) => ({
-      ...variant,
-      ...shoppingPatches[index],
-    }));
-    setVariants(variantsWithShopping);
-    updateHistoryVariants(runId, variantsWithShopping);
+    setVariants(nextVariants);
+    if (activeRunIdRef.current) {
+      updateHistoryVariants(activeRunIdRef.current, nextVariants);
+    }
   }
 
   async function runPipeline() {
@@ -550,6 +554,7 @@ export default function Home() {
         finalMaterials: null,
         shoppingLinks: [],
         shoppingError: null,
+        shoppingLoading: false,
       }));
       setVariants(initialVariants);
 
@@ -575,7 +580,6 @@ export default function Home() {
         variants: finalVariants,
         evaluationProcess: evaluationData,
       });
-      void attachShoppingLinks(runId, runKeyword, finalVariants);
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했어요.");
       setStep("idle");
@@ -610,7 +614,7 @@ export default function Home() {
             <input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="예: 8월 10일 성수동 카페 데이트, 175cm 70kg"
+              placeholder="예: 이번 주말 성수동 카페 데이트, 175cm 70kg 남성"
               className="flex-1 rounded-none border border-zinc-200 bg-white px-4 py-3 text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none"
               disabled={isRunning}
             />
@@ -772,7 +776,7 @@ export default function Home() {
           <section>
             <h2 className="font-semibold text-black dark:text-zinc-50">3. 최종 룩북 2안</h2>
             <div className="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {variants.map((v) => (
+              {variants.map((v, variantIndex) => (
                 <div key={v.concept.id ?? v.concept.name} className="min-w-0 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
                   <h3 className="break-keep text-lg font-semibold text-black dark:text-zinc-50">
                     {v.concept.name}
@@ -814,9 +818,19 @@ export default function Home() {
                   )}
 
                   <div className="mt-4 border-t border-zinc-200 pt-3 dark:border-zinc-800">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
-                      비슷한 옷 구매 링크
-                    </p>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
+                        비슷한 옷 구매 링크
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => findShoppingLinks(variantIndex)}
+                        disabled={v.shoppingLoading}
+                        className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {v.shoppingLoading ? "검색 중..." : v.shoppingLinks.length ? "다시 찾기" : "비슷한 상품 찾기"}
+                      </button>
+                    </div>
                     {v.shoppingLinks.length > 0 ? (
                       <div className="mt-2 flex flex-col gap-2">
                         {v.shoppingLinks.map((link, linkIndex) => (
@@ -841,10 +855,14 @@ export default function Home() {
                       <p className="mt-2 rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
                         ✗ 구매 링크 검색 실패: {v.shoppingError}
                       </p>
-                    ) : (
+                    ) : v.shoppingLoading ? (
                       <p className="mt-2 flex items-center gap-2 text-sm text-zinc-400">
                         <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500 dark:border-zinc-700 dark:border-t-zinc-400" />
                         비슷한 상품 검색 중...
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-sm text-zinc-500">
+                        버튼을 누르면 이 룩의 착용 아이템과 비슷한 상품을 검색해요.
                       </p>
                     )}
                   </div>
