@@ -34,7 +34,7 @@ export async function POST(req: Request) {
       {
         role: "system",
         content:
-          "너는 패션 브랜드 기획자야. 주어진 키워드와 트렌드 조사 결과를 바탕으로 패션 컬렉션 컨셉을 JSON으로 기획해줘. 필드: name, description, mood, colorPalette(string[]), targetCustomer, materials(string[]) - 이 컨셉에 사용할 핵심 원단/부자재 목록, 가장 비중 큰 주 원단을 배열 맨 앞에 배치 (예: ['3-layer waterproof recycled nylon', 'YKK waterproof zipper']), 영문 소재명으로 작성 (원가 조사에 그대로 검색어로 쓰임). name과 colorPalette, materials 값을 제외한 모든 텍스트(description, mood, targetCustomer)는 사용자 입력과 같은 언어로 작성해. 사용자 입력이 한국어면 한국어로 작성해.",
+          "너는 패션 브랜드 기획자야. 주어진 키워드와 트렌드 조사 결과를 바탕으로 패션 컬렉션 컨셉을 JSON으로 기획해줘. 필드: name, description, mood, colorPalette(string[]), targetCustomer, materials(string[]) - 이 컨셉에 사용할 핵심 원단/부자재 목록, 가장 비중 큰 주 원단을 배열 맨 앞에 배치 (예: ['3-layer waterproof recycled nylon', 'YKK waterproof zipper']), 영문 소재명으로 작성 (원가 조사에 그대로 검색어로 쓰임). 트렌드 조사 결과에 실제 기후(기온/습도) 정보가 있다면 materials는 반드시 그 기후에 실제로 적합한 원단이어야 해 (예: 고온다습한 여름이면 통기성/속건성 좋은 가벼운 원단을 우선하고 두꺼운 겨울 원단은 피해). 트렌드 조사 결과에 지역 특유의 로컬 트렌드가 있다면 description/mood에 반영해. name과 colorPalette, materials 값을 제외한 모든 텍스트(description, mood, targetCustomer)는 사용자 입력과 같은 언어로 작성해. 사용자 입력이 한국어면 한국어로 작성해.",
       },
       {
         role: "user",
