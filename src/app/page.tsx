@@ -265,20 +265,35 @@ function EvaluationList({
   previousEvaluations?: Evaluation[];
   hideSelectedDetails?: boolean;
 }) {
-  const previousRankById = new Map(
-    (previousEvaluations ?? []).map((evaluation, index) => [
-      evaluation.id,
-      evaluation.rank ?? index + 1,
-    ]),
-  );
+  const previousRankByKey = new Map<string, number>();
+  (previousEvaluations ?? []).forEach((evaluation, index) => {
+    const displayRank = index + 1;
+    previousRankByKey.set(`id:${evaluation.id}`, displayRank);
+    previousRankByKey.set(`name:${evaluation.name}`, displayRank);
+  });
 
   function getRankMovement(evaluation: Evaluation, index: number) {
-    const previousRank = previousRankById.get(evaluation.id);
+    const previousRank =
+      previousRankByKey.get(`id:${evaluation.id}`) ??
+      previousRankByKey.get(`name:${evaluation.name}`);
     if (previousRank === undefined) return null;
-    const currentRank = evaluation.rank ?? index + 1;
-    if (currentRank < previousRank) return { symbol: "▲", label: "상승", className: "text-emerald-600" };
-    if (currentRank > previousRank) return { symbol: "▼", label: "하강", className: "text-red-600" };
-    return { symbol: "—", label: "유지", className: "text-zinc-500" };
+    const currentRank = index + 1;
+    const delta = previousRank - currentRank;
+    if (delta > 0) {
+      return {
+        text: `▲ ${delta}`,
+        label: `${delta}등 상승`,
+        className: "text-emerald-600",
+      };
+    }
+    if (delta < 0) {
+      return {
+        text: `▼ ${Math.abs(delta)}`,
+        label: `${Math.abs(delta)}등 하강`,
+        className: "text-red-600",
+      };
+    }
+    return { text: "—", label: "유지", className: "text-zinc-500" };
   }
 
   return (
@@ -320,7 +335,7 @@ function EvaluationList({
                     className={`text-xs font-semibold ${rankMovement.className}`}
                     title={`1차 평가 대비 ${rankMovement.label}`}
                   >
-                    {rankMovement.symbol}
+                    {rankMovement.text}
                   </span>
                 )}
                 <span className="rounded-full bg-violet-100 px-2 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-950 dark:text-violet-300">

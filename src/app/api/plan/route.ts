@@ -52,11 +52,11 @@ function toStringArray(value: unknown) {
   return [];
 }
 
-function normalizeConcepts(value: unknown) {
+function normalizeConcepts(value: unknown, fallbackConcepts: Concept[] = []) {
   return asArray<Record<string, unknown>>(value)
     .slice(0, 5)
     .map((item, index): Concept => ({
-      id: String(item.id ?? `look_${String(index + 1).padStart(2, "0")}`),
+      id: fallbackConcepts[index]?.id ?? String(item.id ?? `look_${String(index + 1).padStart(2, "0")}`),
       name: String(item.name ?? `후보 ${index + 1}`),
       description: String(item.description ?? ""),
       mood: String(item.mood ?? ""),
@@ -192,6 +192,7 @@ export async function POST(req: Request) {
 - 예: "모자: 블랙 볼캡", "상의(이너): 화이트 코튼 티셔츠", "상의(아우터): 네이비 세미오버 블레이저", "상의(레이어드): 라이트그레이 니트 베스트", "하의: 차콜 와이드 슬랙스", "신발: 블랙 레더 로퍼", "악세사리: 실버 체인 목걸이".
 - 없는 카테고리는 억지로 만들지 말되, 룩북 이미지에 착용될 아이템은 빠짐없이 포함한다.
 - 후보들은 색상만 다른 수준이 아니라 무드/아이템/핏/소재가 명확히 달라야 한다.
+- 수정 후보(repairedCandidates)는 원 후보와 같은 순서, 같은 id를 반드시 유지한다.
 
 평가 규칙:
 - 점수 필드명은 weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore, totalScore.
@@ -228,7 +229,7 @@ id, name, weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore,
 
     const parsed = parseJsonObjectFromText(response.output_text) as Record<string, unknown>;
     const originalCandidates = normalizeConcepts(parsed.originalCandidates);
-    const repairedCandidates = normalizeConcepts(parsed.repairedCandidates);
+    const repairedCandidates = normalizeConcepts(parsed.repairedCandidates, originalCandidates);
     const candidateBase = repairedCandidates.length ? repairedCandidates : originalCandidates;
     const round1 = rankRound1Evaluations(normalizeEvaluations(parsed.round1, originalCandidates));
     const normalizedRound2 = normalizeEvaluations(parsed.round2, candidateBase);
