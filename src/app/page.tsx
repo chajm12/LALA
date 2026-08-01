@@ -87,15 +87,16 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
       {/* Hero */}
-      <section className="relative h-[70vh] w-full overflow-hidden bg-black">
+      <section className="relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden bg-black">
         <iframe
           src="https://my.spline.design/retrofuturismbganimation-ekg1AOKnE6ZMIXQPsPPfYxw2/"
           title="Retro Futurism 3D Background"
           frameBorder="0"
           className="absolute inset-0 h-full w-full"
         />
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,transparent_0%,transparent_40%,rgba(0,0,0,0.55)_60%,rgba(0,0,0,0.93)_100%)]" />
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 text-center [text-shadow:0_2px_24px_rgba(0,0,0,0.85)]">
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,transparent_0%,transparent_35%,rgba(0,0,0,0.55)_55%,rgba(0,0,0,0.93)_85%)]" />
+
+        <div className="relative flex flex-col items-center gap-4 px-6 text-center [text-shadow:0_2px_24px_rgba(0,0,0,0.85)]">
           <span className="text-xs font-medium tracking-[0.3em] text-violet-200 uppercase">
             AI Fashion Director
           </span>
@@ -106,29 +107,31 @@ export default function Home() {
             한 줄의 아이디어만으로 트렌드 조사부터 룩북, 원가 산출까지
           </p>
         </div>
-      </section>
 
-      {/* Input + pipeline */}
-      <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-16">
-        <div className="flex gap-2">
+        <div className="relative mt-10 flex w-full max-w-xl gap-2 px-6">
           <input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             placeholder="예: Y2K 스트릿 감성의 서머 캡슐 컬렉션"
-            className="flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-2 text-black dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+            className="flex-1 rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-white placeholder-white/50 backdrop-blur-md focus:border-white/40 focus:outline-none"
             disabled={isRunning}
           />
           <button
             onClick={runPipeline}
             disabled={isRunning || !keyword.trim()}
-            className="rounded-lg bg-black px-5 py-2 font-medium text-white disabled:opacity-40 dark:bg-white dark:text-black"
+            className="rounded-lg bg-white px-5 py-3 font-medium text-black disabled:opacity-40"
           >
             {isRunning ? "진행 중..." : "생성"}
           </button>
         </div>
 
-        {error && <p className="text-red-500">{error}</p>}
+        {error && (
+          <p className="relative mt-4 px-6 text-center text-red-300">{error}</p>
+        )}
+      </section>
 
+      {/* Pipeline results */}
+      <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-16">
         {step !== "idle" && (
           <ol className="flex gap-4 text-sm text-zinc-500">
             {(["trend", "concept", "lookbook", "cost"] as Step[]).map((s) => (
