@@ -3,12 +3,96 @@ import { openai, TREND_MODEL } from "@/lib/openai";
 import { agentLog } from "@/lib/log";
 
 type ShoppingLink = {
+  category?: string;
   item: string;
   title: string;
   url: string;
   source: string;
   reason: string;
 };
+
+type OutfitRequirement = {
+  raw: string;
+  category?: string;
+  item: string;
+};
+
+const CATEGORY_KEYWORDS = [
+  { category: "모자", patterns: ["모자", "볼캡", "캡", "비니", "버킷햇", "hat", "cap", "beanie"] },
+  { category: "상의(이너)", patterns: ["티셔츠", "티", "셔츠", "이너", "니트", "스웨터", "맨투맨", "후드", "top", "inner", "t-shirt", "shirt"] },
+  { category: "상의(아우터)", patterns: ["아우터", "자켓", "재킷", "블레이저", "코트", "점퍼", "패딩", "가디건", "outer", "jacket", "blazer", "coat"] },
+  { category: "상의(레이어드)", patterns: ["레이어드", "베스트", "조끼", "뷔스티에", "vest", "layer"] },
+  { category: "하의", patterns: ["바지", "슬랙스", "데님", "청바지", "팬츠", "스커트", "쇼츠", "하의", "pants", "denim", "slacks"] },
+  { category: "신발", patterns: ["신발", "스니커즈", "로퍼", "부츠", "구두", "샌들", "shoes", "sneakers", "loafer", "boots"] },
+  { category: "가방", patterns: ["가방", "백", "토트", "크로스백", "백팩", "bag", "tote"] },
+  { category: "악세사리", patterns: ["악세사리", "액세서리", "목걸이", "반지", "팔찌", "시계", "벨트", "선글라스", "accessory", "necklace", "ring", "belt"] },
+];
+
+function detectFocusCategories(keyword: string) {
+  const normalized = keyword.toLowerCase();
+  return CATEGORY_KEYWORDS
+    .filter((entry) => entry.patterns.some((pattern) => normalized.includes(pattern.toLowerCase())))
+    .map((entry) => entry.category);
+}
+
+function normalizeCategory(value: string) {
+  const normalized = value.toLowerCase();
+  return CATEGORY_KEYWORDS.find((entry) =>
+    entry.patterns.some((pattern) => normalized.includes(pattern.toLowerCase())) ||
+    normalized.includes(entry.category.toLowerCase())
+  )?.category;
+}
+
+function parseOutfitRequirement(raw: string): OutfitRequirement {
+  const [left, ...rest] = raw.split(/[:：]/);
+  const item = rest.join(":").trim();
+  const category = item ? normalizeCategory(left) : normalizeCategory(raw);
+  return {
+    raw,
+    ...(category ? { category } : {}),
+    item: item || raw,
+  };
+}
+
+function getMissingOutfitItems(outfitItems: string[], links: ShoppingLink[]) {
+  const requirements = outfitItems.map(parseOutfitRequirement);
+  if (!requirements.length) return [];
+
+  const requiredCounts = new Map<string, OutfitRequirement[]>();
+  for (const requirement of requirements) {
+    const key = requirement.category ?? requirement.item;
+    requiredCounts.set(key, [...(requiredCounts.get(key) ?? []), requirement]);
+  }
+
+  const linkedCounts = new Map<string, number>();
+  for (const link of links) {
+    const key = link.category ?? normalizeCategory(link.item) ?? link.item;
+    linkedCounts.set(key, (linkedCounts.get(key) ?? 0) + 1);
+  }
+
+  return [...requiredCounts.entries()].flatMap(([key, required]) => {
+    const linkedCount = linkedCounts.get(key) ?? 0;
+    return required.slice(linkedCount).map((item) => item.raw);
+  });
+}
+
+function mergeLinks(primary: ShoppingLink[], secondary: ShoppingLink[]) {
+  const seen = new Set<string>();
+  return [...primary, ...secondary].filter((link) => {
+    if (seen.has(link.url)) return false;
+    seen.add(link.url);
+    return true;
+  });
+}
+
+function sortFocusLinks(links: ShoppingLink[], focusCategories: string[]) {
+  if (!focusCategories.length) return links;
+  return [...links].sort((a, b) => {
+    const aFocused = a.category && focusCategories.includes(a.category) ? 0 : 1;
+    const bFocused = b.category && focusCategories.includes(b.category) ? 0 : 1;
+    return aFocused - bFocused;
+  });
+}
 
 const SEARCH_URL_PATTERNS = [
   /\/search\b/i,
@@ -61,7 +145,11 @@ function normalizeLinks(value: unknown, options: { allowSearchFallback?: boolean
       const url = typeof link.url === "string" ? link.url : "";
       if (!/^https?:\/\//.test(url)) return null;
       if (!options.allowSearchFallback && !isDirectProductUrl(url)) return null;
+      const category = typeof link.category === "string"
+        ? link.category
+        : normalizeCategory(String(link.item ?? ""));
       return {
+        ...(category ? { category } : {}),
         item: String(link.item ?? "추천 아이템"),
         title: String(link.title ?? "비슷한 상품"),
         url,
@@ -70,7 +158,7 @@ function normalizeLinks(value: unknown, options: { allowSearchFallback?: boolean
       };
     })
     .filter((item): item is ShoppingLink => item !== null)
-    .slice(0, 8);
+    .slice(0, 12);
 }
 
 async function searchFallbackLinks({
@@ -78,15 +166,17 @@ async function searchFallbackLinks({
   concept,
   outfitItems,
   outfitItemText,
+  focusCategories,
 }: {
   keyword: string;
   concept: Record<string, unknown>;
   outfitItems: string[];
   outfitItemText: string;
+  focusCategories: string[];
 }) {
   agentLog(
     "shopping",
-    "직접 상품 링크 0개 → 정교한 쇼핑 검색 결과 fallback 실행",
+    `정교한 쇼핑 검색 결과 fallback 실행 (${outfitItems.length || "전체"}개 아이템)`,
     `responses.create + web_search_preview · ${TREND_MODEL}`,
   );
 
@@ -102,6 +192,7 @@ async function searchFallbackLinks({
 - 색감: ${Array.isArray(concept.colorPalette) ? concept.colorPalette.join(", ") : ""}
 - 아이템: ${outfitItemText}
 - 원단/질감: ${Array.isArray(concept.materials) ? concept.materials.join(", ") : ""}
+- 사용자가 특별히 우선 추천을 요청한 제품군: ${focusCategories.length ? focusCategories.join(", ") : "없음"}
 
 직접 상품 상세 링크를 충분히 찾지 못했으므로, 이번에는 쇼핑 검색 결과 링크를 찾아줘.
 단, 일반적인 넓은 검색어가 아니라 룩북 아이템의 색감, 핏, 재질/원단, 디자인이 최대한 들어간 정교한 검색어로 연결되는 쇼핑 검색 결과여야 해.
@@ -114,6 +205,10 @@ async function searchFallbackLinks({
 
 대상 아이템:
 ${outfitItems.length ? outfitItems.map((item, index) => `${index + 1}. ${item}`).join("\n") : "- 설명에서 상의/하의/아우터/신발/가방/액세서리를 추출"}
+
+카테고리 커버리지:
+- 모자, 상의(이너), 상의(아우터), 상의(레이어드), 하의, 신발, 가방, 악세사리 중 실제 룩에 착용된 모든 카테고리를 커버해.
+- 사용자가 특정 제품군을 요청했다면 그 제품군 링크를 links 배열 최상단에 배치해.
 
 우선 쇼핑몰:
 무신사, 29CM, W컨셉, EQL, SSF샵, 브랜드 공식몰, 백화점/편집샵
@@ -128,6 +223,7 @@ JSON 스키마:
 {
   "links": [
     {
+      "category": "모자|상의(이너)|상의(아우터)|상의(레이어드)|하의|신발|가방|악세사리 중 하나",
       "item": "아이템명",
       "title": "정교한 검색어 또는 검색 결과 제목",
       "url": "https://...",
@@ -137,7 +233,7 @@ JSON 스키마:
   ]
 }
 
-links는 핵심 아이템 수만큼, 최대 8개.`,
+links는 착용 카테고리 수만큼, 최대 12개.`,
   });
 
   const parsed = parseJsonObject(response.output_text);
@@ -155,6 +251,7 @@ export async function POST(req: Request) {
       ? concept.outfitItems.map((item: unknown) => String(item)).filter(Boolean)
       : [];
     const outfitItemText = outfitItems.length ? outfitItems.join(", ") : concept.description;
+    const focusCategories = detectFocusCategories(keyword);
 
     agentLog(
       "shopping",
@@ -174,11 +271,17 @@ export async function POST(req: Request) {
 - 색감: ${Array.isArray(concept.colorPalette) ? concept.colorPalette.join(", ") : ""}
 - 아이템: ${outfitItemText}
 - 원단/질감: ${Array.isArray(concept.materials) ? concept.materials.join(", ") : ""}
+- 사용자가 특별히 우선 추천을 요청한 제품군: ${focusCategories.length ? focusCategories.join(", ") : "없음"}
 
 위 착장과 비슷한 옷을 실제로 살 수 있는 한국어 쇼핑 링크를 웹검색으로 찾아줘.
-가장 중요한 목표는 "룩북에 나온 모든 핵심 아이템에 대해 색감, 핏, 재질/원단, 디자인이 가장 비슷한 직접 상품 상세 링크를 찾는 것"이야.
+가장 중요한 목표는 "룩북에 나온 모든 착용 제품에 대해 색감, 핏, 재질/원단, 디자인이 가장 비슷한 직접 상품 상세 링크를 찾는 것"이야.
 아래 아이템 목록이 있으면 각 아이템마다 최소 1개 이상의 직접 상품 상세 링크를 찾아야 해:
 ${outfitItems.length ? outfitItems.map((item, index) => `${index + 1}. ${item}`).join("\n") : "- 아이템 목록이 없으면 설명에서 상의/하의/아우터/신발/가방/액세서리를 추출"}
+
+카테고리 커버리지:
+- 모자, 상의(이너), 상의(아우터), 상의(레이어드), 하의, 신발, 가방, 악세사리 중 실제 룩에 착용된 모든 제품의 링크를 제공해.
+- outfitItems에 카테고리가 명시되어 있으면 그 카테고리를 그대로 따라.
+- 사용자가 "악세사리를 추천해줘", "티셔츠를 추천해줘", "신발 추천"처럼 특정 제품군을 요청했다면 해당 카테고리 링크를 links 배열 최상단에 배치해.
 
 우선순위:
 1. 무신사, 29CM, W컨셉, EQL, SSF샵, 브랜드 공식몰, 백화점/편집샵
@@ -193,6 +296,7 @@ ${outfitItems.length ? outfitItems.map((item, index) => `${index + 1}. ${item}`)
 - 가능한 한 URL에 product, goods, item, products, shop, goodsNo 등 상품 상세를 암시하는 링크를 골라.
 - URL에 search, query, keyword, category, collection 같은 검색/목록 단어가 있으면 제외해.
 - 같은 쇼핑몰만 반복하지 말고 서로 다른 핵심 아이템의 직접 상품 링크를 섞어.
+- category 필드는 반드시 해당 상품의 착용 카테고리를 넣어.
 - item 필드는 반드시 원래 아이템명과 대응되게 써. 예: "체크 셔츠", "와이드 슬랙스", "로퍼".
 - 링크 제목이 아이템과 맞지 않으면 포함하지 마.
 - 색감/소재/핏/디자인이 룩북과 너무 다르면 제외해.
@@ -203,6 +307,7 @@ JSON 스키마:
 {
       "links": [
     {
+      "category": "모자|상의(이너)|상의(아우터)|상의(레이어드)|하의|신발|가방|악세사리 중 하나",
       "item": "아이템명",
       "title": "상품명",
       "url": "https://...",
@@ -212,14 +317,30 @@ JSON 스키마:
   ]
 }
 
-links는 직접 상품 상세 링크만 포함하고, 최대 8개.`,
+links는 직접 상품 상세 링크만 포함하고, 착용 카테고리 수만큼 최대 12개.`,
     });
 
     const parsed = parseJsonObject(response.output_text);
     let links = normalizeLinks((parsed as Record<string, unknown>).links);
-    if (links.length === 0) {
-      links = await searchFallbackLinks({ keyword, concept, outfitItems, outfitItemText });
+    const missingItems = getMissingOutfitItems(outfitItems, links);
+    if (links.length === 0 || missingItems.length > 0) {
+      agentLog(
+        "shopping",
+        links.length === 0
+          ? "직접 상품 링크가 없어 전체 fallback 검색 실행"
+          : `누락 아이템 ${missingItems.length}개 보완 검색 실행: ${missingItems.join(", ")}`,
+      );
+      const fallbackItems = links.length === 0 ? outfitItems : missingItems;
+      const fallbackLinks = await searchFallbackLinks({
+        keyword,
+        concept,
+        outfitItems: fallbackItems,
+        outfitItemText: fallbackItems.length ? fallbackItems.join(", ") : outfitItemText,
+        focusCategories,
+      });
+      links = mergeLinks(links, fallbackLinks);
     }
+    links = sortFocusLinks(links, focusCategories).slice(0, 12);
     agentLog("shopping", `구매 링크 ${links.length}개 검색 완료`);
 
     return NextResponse.json({ links });

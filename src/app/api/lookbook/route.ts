@@ -4,14 +4,52 @@ import { agentLog } from "@/lib/log";
 
 const MAX_RETRIES = 1;
 
+function parseHeightWeight(text: string) {
+  const heightMatch = text.match(/(\d{3}(?:\.\d+)?)\s?(?:cm|센티|키)/i);
+  const weightMatch = text.match(/(\d{2,3}(?:\.\d+)?)\s?(?:kg|킬로|몸무게)/i);
+  const heightCm = heightMatch ? Number(heightMatch[1]) : null;
+  const weightKg = weightMatch ? Number(weightMatch[1]) : null;
+  if (!heightCm || !weightKg) return null;
+
+  const bmi = weightKg / (heightCm / 100) ** 2;
+  let build = "average realistic build";
+  if (bmi < 18.5) build = "slender, lean realistic build with narrow body volume";
+  else if (bmi < 23) build = "balanced average realistic build";
+  else if (bmi < 25) build = "solid average-to-athletic realistic build";
+  else if (bmi < 30) build = "fuller realistic build with visible body volume";
+  else build = "larger plus-size realistic build with broad body volume";
+
+  let heightDescription = "average height impression";
+  if (heightCm < 165) heightDescription = "shorter height impression with proportionally shorter limbs";
+  else if (heightCm >= 180) heightDescription = "tall height impression with longer limbs";
+
+  return `${heightCm}cm, ${weightKg}kg, BMI about ${bmi.toFixed(1)}: ${heightDescription}; ${build}.`;
+}
+
+function buildBodyPrompt(concept: Record<string, unknown>) {
+  const source = [
+    concept.targetCustomer,
+    concept.bodyProfile,
+    concept.description,
+    concept.fitStrategy,
+  ]
+    .filter((value) => typeof value === "string")
+    .join(" ");
+  const parsed = parseHeightWeight(source);
+  const bodyProfile = typeof concept.bodyProfile === "string" ? concept.bodyProfile : "";
+  return parsed
+    ? `${bodyProfile} Explicit numeric body reference for the image model: ${parsed}`
+    : bodyProfile;
+}
+
 function buildPrompt(concept: Record<string, unknown>, extra?: string) {
   const materials = Array.isArray(concept.materials) ? concept.materials.join(", ") : "";
   const colors = Array.isArray(concept.colorPalette) ? concept.colorPalette.join(", ") : "";
   const items = Array.isArray(concept.outfitItems) ? concept.outfitItems.join(", ") : "";
   const target = concept.targetCustomer ?? "";
-  const bodyProfile = concept.bodyProfile ?? "";
+  const bodyProfile = buildBodyPrompt(concept);
   const fitStrategy = concept.fitStrategy ?? "";
-  return `Fashion lookbook photo of a model wearing an outfit for the concept "${concept.name}". The model's apparent gender, height impression, body build, and proportions MUST match this user profile: "${target}". If the user profile does not clearly mention gender, use a male model by default. Body profile from user height and weight: "${bodyProfile}". Outfit items: ${items || concept.description}. Fit and silhouette strategy: ${fitStrategy}. Mood: ${concept.mood}. Color palette: ${colors}. Materials/fabric: ${materials}. Editorial fashion photography, realistic clothing, natural model pose, studio lighting, full body. Show the model from top of head to shoes with comfortable margin above the head and below the shoes. Do not crop the head, hands, legs, feet, or shoes.${extra ? ` ${extra}` : ""}`;
+  return `Fashion lookbook photo of a model wearing an outfit for the concept "${concept.name}". The model's apparent gender, height impression, body build, and proportions MUST match this user profile: "${target}". If the user profile does not clearly mention gender, use a male model by default. Body profile from user height and weight: "${bodyProfile}". Represent the body realistically, not as a generic fashion model: preserve the height impression, body volume, limb length, shoulder/waist/hip proportion, and overall build implied by the height and weight. Do not automatically make the model tall, thin, muscular, or runway-proportioned unless the height/weight actually supports it. Outfit items: ${items || concept.description}. Fit and silhouette strategy: ${fitStrategy}. Mood: ${concept.mood}. Color palette: ${colors}. Materials/fabric: ${materials}. Editorial fashion photography, realistic clothing, natural model pose, studio lighting, full body. Show the model from top of head to shoes with comfortable margin above the head and below the shoes. Do not crop the head, hands, legs, feet, or shoes.${extra ? ` ${extra}` : ""}`;
 }
 
 type GenerateResult = { imageUrl: string | null; error: string | null };

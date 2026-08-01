@@ -12,13 +12,6 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 html {
   scroll-behavior: smooth;
 }
@@ -27,4 +20,217 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+.retro-page {
+  background:
+    linear-gradient(90deg, rgba(20, 20, 20, 0.035) 0 1px, transparent 1px),
+    linear-gradient(180deg, #f7f6f4 0%, #eeeeeb 42%, #e4e4e0 100%);
+  background-size: 96px auto, auto;
+  color: #171717;
+}
+
+.retro-hero {
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0 calc(100% - 88px),
+      rgba(18, 18, 18, 0.08) calc(100% - 88px) calc(100% - 87px),
+      transparent calc(100% - 87px)
+    ),
+    linear-gradient(180deg, #ffffff 0%, #f8f7f5 58%, #efeeeb 100%);
+}
+
+.style-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.15rem;
+  padding: clamp(1.5rem, 4vw, 3rem) 0 0;
+}
+
+.style-nav {
+  display: flex;
+  width: min(100%, 760px);
+  justify-content: center;
+  gap: clamp(1rem, 4vw, 3.2rem);
+  border-bottom: 1px solid #ece9e3;
+  border-top: 1px solid #ece9e3;
+  padding: 0.85rem 0;
+  color: #676767;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.style-visual {
+  min-height: clamp(17rem, 45vh, 31rem);
+}
+
+.style-slide {
+  position: relative;
+  width: min(100%, 850px);
+  border: 1px solid #e7e4de;
+  background: #f4f2ee;
+  box-shadow: 0 24px 50px rgba(26, 26, 26, 0.08);
+}
+
+.style-slide::before,
+.style-slide::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 2rem;
+  height: 2rem;
+  border-top: 1px solid #d3d0ca;
+  border-left: 1px solid #d3d0ca;
+}
+
+.style-slide::before {
+  left: -3.4rem;
+  transform: translateY(-50%) rotate(-45deg);
+}
+
+.style-slide::after {
+  right: -3.4rem;
+  transform: translateY(-50%) rotate(135deg);
+}
+
+.style-slide-image {
+  min-height: clamp(15rem, 39vw, 28rem);
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.12) 28%, rgba(255, 255, 255, 0.04) 70%, rgba(255, 255, 255, 0.82)),
+    radial-gradient(ellipse at 50% 100%, rgba(150, 135, 103, 0.32), transparent 54%),
+    repeating-linear-gradient(105deg, transparent 0 30px, rgba(143, 128, 94, 0.13) 31px 33px, transparent 34px 64px),
+    linear-gradient(135deg, #faf9f6 0%, #e4e1da 52%, #d6d0c5 100%);
+}
+
+.style-slide-copy {
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  transform: translateX(-50%);
+  min-width: min(92%, 420px);
+  border: 1px solid rgba(23, 23, 23, 0.1);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 1rem 1.35rem;
+  text-align: center;
+  backdrop-filter: blur(10px);
+}
+
+.style-slide-copy span {
+  display: block;
+  color: #777;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+}
+
+.style-slide-copy strong {
+  display: block;
+  margin-top: 0.35rem;
+  color: #191919;
+  font-size: clamp(1.1rem, 3vw, 1.75rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.style-search {
+  border: 1px solid #d8d5cf;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 0.55rem;
+  box-shadow: 0 14px 34px rgba(22, 22, 22, 0.08);
+}
+
+.retro-title {
+  color: #151515;
+  font-family: Georgia, "Times New Roman", "AppleMyungjo", "Nanum Myeongjo", serif;
+  font-size: clamp(2.4rem, 8vw, 5.2rem);
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: -0.065em;
+  line-height: 0.86;
+  transform: scaleX(1.04);
+}
+
+.retro-page main > div,
+.retro-page main > section > div,
+.retro-page main aside,
+.retro-page main .rounded-lg.border {
+  border-color: #dedbd4;
+  background-color: rgba(255, 255, 255, 0.82);
+  color: #171717;
+  box-shadow: 0 18px 38px rgba(26, 26, 26, 0.045);
+}
+
+.retro-page main .bg-white,
+.retro-page main .bg-zinc-50,
+.retro-page main .dark\:bg-zinc-950,
+.retro-page main .dark\:bg-zinc-900 {
+  background-color: #f7f6f3;
+}
+
+.retro-page main .text-black,
+.retro-page main .dark\:text-zinc-50 {
+  color: #171717;
+}
+
+.retro-page main .text-zinc-500,
+.retro-page main .text-zinc-600,
+.retro-page main .text-zinc-700,
+.retro-page main .dark\:text-zinc-300 {
+  color: #5f5f5a;
+}
+
+.retro-page main .text-violet-400,
+.retro-page main .text-violet-500,
+.retro-page main .text-violet-600,
+.retro-page main .text-violet-700,
+.retro-page main .dark\:text-violet-300,
+.retro-page main .dark\:text-violet-400 {
+  color: #171717;
+}
+
+.retro-page main .bg-violet-100,
+.retro-page main .dark\:bg-violet-950 {
+  background-color: #171717;
+}
+
+.retro-page main .bg-violet-100.text-violet-700,
+.retro-page main .dark\:bg-violet-950.dark\:text-violet-300 {
+  color: #ffffff;
+}
+
+.retro-page main h2,
+.retro-page main h3 {
+  letter-spacing: -0.02em;
+}
+
+.retro-page main a,
+.retro-page main button {
+  border-radius: 0;
+}
+
+.retro-page main img {
+  border: 1px solid #dedbd4;
+  border-radius: 0;
+  background: #f8f7f4;
+}
+
+@media (max-width: 720px) {
+  .style-nav {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 0.85rem;
+    overflow-x: auto;
+  }
+
+  .style-slide::before,
+  .style-slide::after {
+    content: none;
+  }
+
+  .style-search {
+    flex-direction: column;
+  }
 }

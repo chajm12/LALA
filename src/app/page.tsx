@@ -43,6 +43,7 @@ type EvaluationProcess = {
 };
 
 type ShoppingLink = {
+  category?: string;
   item: string;
   title: string;
   url: string;
@@ -157,13 +158,15 @@ function asShoppingLinks(value: unknown): ShoppingLink[] {
       const link = item as Record<string, unknown>;
       const url = typeof link.url === "string" ? link.url : "";
       if (!/^https?:\/\//.test(url)) return null;
-      return {
+      const normalizedLink: ShoppingLink = {
+        category: typeof link.category === "string" ? link.category : undefined,
         item: String(link.item ?? "추천 아이템"),
         title: String(link.title ?? "비슷한 상품"),
         url,
         source: String(link.source ?? "쇼핑몰"),
         reason: String(link.reason ?? "최종 착장과 유사한 아이템이에요."),
       };
+      return normalizedLink;
     })
     .filter((item): item is ShoppingLink => item !== null);
 }
@@ -510,38 +513,31 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
+    <div className="retro-page min-h-screen font-sans">
       <LoadingScreen phase={loadingPhase} currentStep={step} />
 
       {/* Hero */}
-      <section className="relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden bg-black">
-        <iframe
-          src="https://my.spline.design/retrofuturismbganimation-ekg1AOKnE6ZMIXQPsPPfYxw2/"
-          title="Retro Futurism 3D Background"
-          frameBorder="0"
-          className="absolute inset-0 h-full w-full"
-        />
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,transparent_0%,transparent_35%,rgba(0,0,0,0.55)_55%,rgba(0,0,0,0.93)_85%)]" />
+      <section className="retro-hero relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden px-5 py-8">
+        <header className="style-header w-full max-w-6xl">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">
+            AI Fashion Planning Agent
+          </div>
+          <h1 className="retro-title">DDP PARK SAJANG</h1>
+          <nav className="style-nav" aria-label="서비스 메뉴">
+            <span>WEATHER</span>
+            <span>CONCEPT</span>
+            <span>LOOKBOOK</span>
+            <span>SHOPPING</span>
+          </nav>
+        </header>
 
-        <div className="relative flex flex-col items-center gap-4 px-6 text-center [text-shadow:0_2px_24px_rgba(0,0,0,0.85)]">
-          <span className="text-xs font-medium tracking-[0.3em] text-violet-200 uppercase">
-            AI Fashion Director
-          </span>
-          <h1 className="text-5xl font-bold tracking-tight text-white sm:text-6xl">
-            Fashion Planning Agent
-          </h1>
-          <p className="max-w-md text-sm text-violet-100 sm:text-base">
-           
-          </p>
-        </div>
-
-        <div className="relative mt-10 w-full max-w-xl px-6">
-          <div className="flex gap-2">
+        <div className="relative mt-12 w-full max-w-3xl">
+          <div className="style-search flex gap-2">
             <input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               placeholder="예: 8월 10일 성수동 카페 데이트, 175cm 70kg"
-              className="flex-1 rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-white placeholder-white/50 backdrop-blur-md focus:border-white/40 focus:outline-none"
+              className="flex-1 rounded-none border border-zinc-200 bg-white px-4 py-3 text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none"
               disabled={isRunning}
             />
             <button
@@ -549,8 +545,8 @@ export default function Home() {
               disabled={isRunning || !keyword.trim()}
               className={
                 isRunning
-                  ? "flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-white/15 px-5 py-3 font-medium text-white"
-                  : "rounded-lg bg-white px-5 py-3 font-medium text-black disabled:opacity-40"
+                  ? "flex items-center justify-center gap-2 whitespace-nowrap rounded-none bg-zinc-900 px-5 py-3 font-medium text-white"
+                  : "rounded-none bg-zinc-950 px-5 py-3 font-medium text-white transition hover:bg-zinc-700 disabled:opacity-40"
               }
             >
               {isRunning && (
@@ -565,22 +561,22 @@ export default function Home() {
               type="button"
               onClick={() => setIsHistoryOpen((prev) => !prev)}
               disabled={history.length === 0}
-              className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-medium text-white/80 backdrop-blur-md transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-none border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 transition hover:border-zinc-900 hover:text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40"
             >
               이전 기록 {history.length > 0 ? history.length : ""}
             </button>
 
             {isHistoryOpen && (
-              <div className="absolute left-0 top-10 z-20 w-full max-w-md overflow-hidden rounded-lg border border-white/15 bg-black/80 p-2 text-left shadow-2xl backdrop-blur-xl">
+              <div className="absolute left-0 top-10 z-20 w-full max-w-md overflow-hidden rounded-none border border-zinc-200 bg-white p-2 text-left shadow-2xl">
                 {history.map((item) => (
                   <button
                     key={item.id}
                     type="button"
                     onClick={() => restoreHistory(item)}
-                    className="block w-full rounded-md px-3 py-2 text-left transition hover:bg-white/10"
+                    className="block w-full rounded-none px-3 py-2 text-left transition hover:bg-zinc-50"
                   >
-                    <span className="block truncate text-sm font-medium text-white">{item.keyword}</span>
-                    <span className="mt-0.5 block text-xs text-white/50">
+                    <span className="block truncate text-sm font-medium text-zinc-950">{item.keyword}</span>
+                    <span className="mt-0.5 block text-xs text-zinc-500">
                       {item.createdAt} · {formatElapsed(item.elapsedMs)}
                     </span>
                   </button>
@@ -591,7 +587,7 @@ export default function Home() {
         </div>
 
         {error && (
-          <p className="relative mt-4 px-6 text-center text-red-300">{error}</p>
+          <p className="relative mt-4 px-6 text-center text-red-600">{error}</p>
         )}
       </section>
 
@@ -686,6 +682,10 @@ export default function Home() {
               <EvaluationList title="1차 평가" evaluations={evaluationProcess.round1} />
               <EvaluationList title="재평가" evaluations={evaluationProcess.round2} hideSelectedDetails />
             </div>
+
+            <p className="mt-4 text-sm font-medium text-black dark:text-zinc-50">
+              최종 선택: {evaluationProcess.finalConcepts.map((item) => item.name).join(" / ")}
+            </p>
           </section>
         )}
 
@@ -749,7 +749,7 @@ export default function Home() {
                             className="min-w-0 overflow-hidden rounded-md bg-zinc-50 p-3 text-sm transition hover:bg-zinc-100 dark:bg-zinc-900 dark:hover:bg-zinc-800"
                           >
                             <span className="block break-words text-xs font-semibold text-violet-600 dark:text-violet-400">
-                              {link.item} · {link.source}
+                              {[link.category, link.item, link.source].filter(Boolean).join(" · ")}
                             </span>
                             <span className="mt-1 block break-words font-medium leading-snug text-black dark:text-zinc-50">
                               {link.title}
