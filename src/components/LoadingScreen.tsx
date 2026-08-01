@@ -29,7 +29,7 @@ export default function LoadingScreen({
           : phase === "exiting"
           ? "-translate-y-full"
           : "translate-y-full"
-      } ${phase === "hidden" ? "pointer-events-none" : ""}`}
+      } ${phase !== "visible" ? "pointer-events-none" : ""}`}
     >
       {currentStep === "done" ? (
         <div className="flex h-14 w-14 items-center justify-center rounded-full bg-violet-500 text-2xl text-white">
