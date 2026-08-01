@@ -54,26 +54,37 @@ function parseOutfitRequirement(raw: string): OutfitRequirement {
   };
 }
 
+function tokenizeItem(value: string) {
+  const category = normalizeCategory(value);
+  return value
+    .toLowerCase()
+    .replace(/[()（）:：,/·|+\-[\]]/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2)
+    .filter((token) => !CATEGORY_KEYWORDS.some((entry) =>
+      entry.category === category && entry.patterns.some((pattern) => pattern.toLowerCase() === token)
+    ));
+}
+
+function coversRequirement(requirement: OutfitRequirement, link: ShoppingLink) {
+  const linkCategory = link.category ?? normalizeCategory(link.item);
+  if (requirement.category && linkCategory !== requirement.category) return false;
+
+  const requirementTokens = tokenizeItem(requirement.item);
+  if (!requirementTokens.length) return true;
+  const linkText = `${link.item} ${link.title} ${link.reason}`.toLowerCase();
+  const matchedTokens = requirementTokens.filter((token) => linkText.includes(token));
+  return matchedTokens.length > 0;
+}
+
 function getMissingOutfitItems(outfitItems: string[], links: ShoppingLink[]) {
   const requirements = outfitItems.map(parseOutfitRequirement);
   if (!requirements.length) return [];
 
-  const requiredCounts = new Map<string, OutfitRequirement[]>();
-  for (const requirement of requirements) {
-    const key = requirement.category ?? requirement.item;
-    requiredCounts.set(key, [...(requiredCounts.get(key) ?? []), requirement]);
-  }
-
-  const linkedCounts = new Map<string, number>();
-  for (const link of links) {
-    const key = link.category ?? normalizeCategory(link.item) ?? link.item;
-    linkedCounts.set(key, (linkedCounts.get(key) ?? 0) + 1);
-  }
-
-  return [...requiredCounts.entries()].flatMap(([key, required]) => {
-    const linkedCount = linkedCounts.get(key) ?? 0;
-    return required.slice(linkedCount).map((item) => item.raw);
-  });
+  return requirements
+    .filter((requirement) => !links.some((link) => coversRequirement(requirement, link)))
+    .map((item) => item.raw);
 }
 
 function mergeLinks(primary: ShoppingLink[], secondary: ShoppingLink[]) {

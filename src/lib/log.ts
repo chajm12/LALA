@@ -12,8 +12,8 @@ type Scope = keyof typeof COLORS;
 
 /**
  * tool: what's actually being called for this log line, e.g.
- * "responses.create + web_search_preview · gpt-4o" or
- * "images.generate · gpt-image-1" - shown dimmed so the log doubles
+ * "responses.create + web_search_preview · gpt-5.6-luna" or
+ * "images.generate · gpt-image-2" - shown dimmed so the log doubles
  * as a trace of which OpenAI API/tool/model fired at each step.
  */
 export function agentLog(scope: Scope, message: string, tool?: string) {
