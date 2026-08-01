@@ -155,7 +155,7 @@ export default function Home() {
             Fashion Planning Agent
           </h1>
           <p className="max-w-md text-sm text-violet-100 sm:text-base">
-            한 줄의 아이디어만으로 트렌드 조사부터 룩북, 원가 산출까지
+            한 줄의 아이디어만으로 트렌드 조사부터 룩북, 원가 초안까지 몇 분 만에
           </p>
         </div>
 
@@ -242,14 +242,18 @@ export default function Home() {
               Materials: {(finalMaterials ?? concept.materials)?.join(", ")}
             </p>
             {contradictionIssue && (
-              <p className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                시즌/소재 모순이 감지되어 원단을 자동 수정했어요: {contradictionIssue}
-              </p>
+              <div className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                <p className="font-semibold">💡 왜 원단이 바뀌었나요?</p>
+                <p className="mt-0.5">
+                  계절/트렌드와 원단이 안 맞아서 자동으로 고쳤어요: {contradictionIssue}
+                </p>
+              </div>
             )}
             {substitutionReason && (
-              <p className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                원가 절감을 위해 원단이 자동으로 대체됐어요: {substitutionReason}
-              </p>
+              <div className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                <p className="font-semibold">💡 왜 원단이 바뀌었나요?</p>
+                <p className="mt-0.5">원가 절감을 위해 원단을 자동으로 대체했어요: {substitutionReason}</p>
+              </div>
             )}
           </section>
         )}
@@ -265,17 +269,22 @@ export default function Home() {
                   alt="Generated lookbook"
                   className="mt-2 w-full rounded-lg"
                 />
-                <p
+                <div
                   className={
                     lookbookVerified
-                      ? "mt-2 text-xs font-medium text-emerald-600 dark:text-emerald-400"
-                      : "mt-2 text-xs font-medium text-amber-600 dark:text-amber-400"
+                      ? "mt-2 rounded-md bg-emerald-50 p-2 text-xs text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                      : "mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300"
                   }
                 >
-                  {lookbookVerified
-                    ? `✓ 스펙(색상/소재/무드) 일치 확인됨${lookbookRetried ? " — 1회 재생성 후 통과" : ""}`
-                    : `⚠ 일부 스펙 불일치${lookbookRetried ? " (1회 재생성했지만 여전히 남음)" : ""}: ${lookbookMismatches.join(", ")}`}
-                </p>
+                  <p className="font-semibold">
+                    {lookbookVerified ? "✓ AI가 직접 검증했어요" : "💡 아직 스펙과 안 맞는 부분이 있어요"}
+                  </p>
+                  <p className="mt-0.5">
+                    {lookbookVerified
+                      ? `이미지의 색상·원단·타겟 모델(성별·연령대)이 기획한 컨셉과 일치하는지 AI가 다시 확인했어요.${lookbookRetried ? " (1차 생성에서 안 맞는 부분이 있어서 1회 재생성했어요.)" : ""}`
+                      : `${lookbookRetried ? "1회 재생성해봤지만" : "확인해보니"} 여전히 남아있는 차이: ${lookbookMismatches.join(", ")}. 이미지는 참고용 초안으로 봐주세요.`}
+                  </p>
+                </div>
               </>
             ) : (
               <p className="mt-2 rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
@@ -288,21 +297,28 @@ export default function Home() {
         {cost && (
           <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
             <h2 className="font-semibold text-black dark:text-zinc-50">4. Cost</h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              ⚠️ 아래 수치는 웹검색 기반 AI 추정치예요. 실제 발주 전에는 반드시 원단 시세를 별도로 확인하세요.
+            </p>
             <ul className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
               <li>Material: {cost.materialCost?.toLocaleString()} KRW</li>
               <li>Labor: {cost.laborCost?.toLocaleString()} KRW</li>
               <li>Overhead: {cost.overheadCost?.toLocaleString()} KRW</li>
               <li className="font-semibold">
-                Production cost: {cost.totalCost?.toLocaleString()} KRW
+                Production cost (추정): {cost.totalCost?.toLocaleString()} KRW
               </li>
               <li className="mt-1 font-semibold text-emerald-600 dark:text-emerald-400">
-                Sell price: {cost.sellCost?.toLocaleString()} KRW{" "}
+                Sell price (추정): {cost.sellCost?.toLocaleString()} KRW{" "}
                 <span className="font-normal text-zinc-500">
                   (margin {Math.round((cost.marginRate ?? 0) * 100)}%)
                 </span>
               </li>
             </ul>
-            <ul className="mt-2 list-disc pl-5 text-sm text-zinc-500">
+
+            <p className="mt-3 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              💡 이렇게 계산했어요
+            </p>
+            <ul className="mt-1 list-disc pl-5 text-sm text-zinc-500">
               {cost.breakdown?.map((b, i) => (
                 <li key={i}>{b}</li>
               ))}
