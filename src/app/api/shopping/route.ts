@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { openai, TREND_MODEL } from "@/lib/openai";
+import { OPENAI_SERVICE_TIER, openai, TREND_MODEL } from "@/lib/openai";
 import { agentLog } from "@/lib/log";
 
 type ShoppingLink = {
@@ -188,11 +188,12 @@ async function searchFallbackLinks({
   agentLog(
     "shopping",
     `정교한 쇼핑 검색 결과 fallback 실행 (${outfitItems.length || "전체"}개 아이템)`,
-    `responses.create + web_search_preview · ${TREND_MODEL}`,
+    `responses.create + web_search_preview · ${TREND_MODEL} · ${OPENAI_SERVICE_TIER}`,
   );
 
   const response = await openai.responses.create({
     model: TREND_MODEL,
+    service_tier: OPENAI_SERVICE_TIER,
     tools: [{ type: "web_search_preview" }],
     input: `사용자 요청: ${keyword}
 
@@ -267,11 +268,12 @@ export async function POST(req: Request) {
     agentLog(
       "shopping",
       `"${concept.name ?? "최종 착장"}" 비슷한 구매 링크 검색 시작`,
-      `responses.create + web_search_preview · ${TREND_MODEL}`,
+      `responses.create + web_search_preview · ${TREND_MODEL} · ${OPENAI_SERVICE_TIER}`,
     );
 
     const response = await openai.responses.create({
       model: TREND_MODEL,
+      service_tier: OPENAI_SERVICE_TIER,
       tools: [{ type: "web_search_preview" }],
       input: `사용자 요청: ${keyword}
 

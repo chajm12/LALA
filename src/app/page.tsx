@@ -80,7 +80,7 @@ const stepLabels: Record<Step, string> = {
   idle: "생성",
   trend: "트렌드 조사 중...",
   concept: "후보 생성·평가 중...",
-  variants: "룩북·구매 링크 생성 중...",
+  variants: "룩북 생성 중...",
   done: "완료",
 };
 
@@ -89,7 +89,7 @@ const AGENT_TRACE_STEPS = [
   { key: "weather", title: "날씨·계절 판단", detail: "날짜와 장소가 있으면 예보/계절감과 지역 기후를 함께 봅니다." },
   { key: "concept", title: "후보 생성", detail: "무드, 색감, 핏, 원단/질감을 다르게 둔 5개 후보를 만듭니다." },
   { key: "evaluate", title: "평가·수정", detail: "날씨, 장소, 체형/핏, 트렌드, 실용성 기준으로 재평가합니다." },
-  { key: "variants", title: "룩북·구매 링크", detail: "최종 2안 이미지를 만들고 비슷한 상품 링크를 찾습니다." },
+  { key: "variants", title: "룩북 생성", detail: "최종 2안 이미지를 먼저 만들고 상품 링크는 이후에 붙입니다." },
 ] as const;
 
 function formatElapsed(ms: number | null) {
@@ -338,6 +338,7 @@ export default function Home() {
   const [history, setHistory] = useState<SearchHistoryItem[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const resultsRef = useRef<HTMLElement>(null);
+  const activeRunIdRef = useRef<string | null>(null);
 
   const isRunning = step !== "idle" && step !== "done";
 
@@ -357,6 +358,10 @@ export default function Home() {
     setHistory((prev) => [item, ...prev.filter((historyItem) => historyItem.id !== item.id)].slice(0, 5));
   }
 
+  function updateHistoryVariants(id: string, variants: Variant[]) {
+    setHistory((prev) => prev.map((item) => (item.id === id ? { ...item, variants } : item)));
+  }
+
   function resetForNewSearch() {
     setKeyword("");
     setError(null);
@@ -368,6 +373,7 @@ export default function Home() {
     setElapsedMs(null);
     setLoadingPhase("hidden");
     setIsHistoryOpen(false);
+    activeRunIdRef.current = null;
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -387,11 +393,10 @@ export default function Home() {
     }, 0);
   }
 
-  async function runVariantWork(concept: Concept, index: number): Promise<Partial<Variant>> {
+  async function runLookbookWork(concept: Concept, index: number): Promise<Partial<Variant>> {
     const lookbookPatch: Partial<Variant> = {};
-    const shoppingPatch: Partial<Variant> = {};
 
-    const lookbookPromise = (async () => {
+    await (async () => {
       const lookbookData = await postJson("/api/lookbook", { concept });
       Object.assign(lookbookPatch, {
         imageUrl: (lookbookData.imageUrl as string) ?? null,
@@ -410,7 +415,17 @@ export default function Home() {
       updateVariant(index, lookbookPatch);
     });
 
-    const shoppingPromise = postJson("/api/shopping", { keyword, concept })
+    return lookbookPatch;
+  }
+
+  async function runShoppingWork(
+    runKeyword: string,
+    concept: Concept,
+    index: number,
+  ): Promise<Partial<Variant>> {
+    const shoppingPatch: Partial<Variant> = {};
+
+    await postJson("/api/shopping", { keyword: runKeyword, concept })
       .then((shoppingData) => {
         const links = asShoppingLinks(shoppingData.links);
         Object.assign(shoppingPatch, {
@@ -428,14 +443,28 @@ export default function Home() {
         updateVariant(index, shoppingPatch);
       });
 
-    await Promise.all([lookbookPromise, shoppingPromise]);
-    return { ...lookbookPatch, ...shoppingPatch };
+    return shoppingPatch;
+  }
+
+  async function attachShoppingLinks(runId: string, runKeyword: string, baseVariants: Variant[]) {
+    const shoppingPatches = await Promise.all(
+      baseVariants.map((variant, index) => runShoppingWork(runKeyword, variant.concept, index)),
+    );
+    if (activeRunIdRef.current !== runId) return;
+    const variantsWithShopping = baseVariants.map((variant, index) => ({
+      ...variant,
+      ...shoppingPatches[index],
+    }));
+    setVariants(variantsWithShopping);
+    updateHistoryVariants(runId, variantsWithShopping);
   }
 
   async function runPipeline() {
     if (!keyword.trim()) return;
     const runKeyword = keyword.trim();
     const runStartedAt = getTimestamp();
+    const runId = `${runStartedAt}`;
+    activeRunIdRef.current = runId;
 
     setError(null);
     setTrend(null);
@@ -455,17 +484,14 @@ export default function Home() {
       setTrend(trendData.trend as string);
 
       setStep("concept");
-      const conceptData = await postJson("/api/concept", { keyword: runKeyword, trend: trendData.trend });
-      const candidatePool = asConceptArray(conceptData.concepts);
-      const evaluationData = normalizeEvaluationProcess(await postJson("/api/evaluate", {
+      const evaluationData = normalizeEvaluationProcess(await postJson("/api/plan", {
         keyword: runKeyword,
         trend: trendData.trend,
-        candidates: candidatePool,
       }));
       setEvaluationProcess(evaluationData);
       const concepts = evaluationData.finalConcepts.length
         ? evaluationData.finalConcepts
-        : candidatePool.slice(0, 2);
+        : evaluationData.repairedCandidates.slice(0, 2);
 
       const initialVariants: Variant[] = concepts.map((concept) => ({
         concept,
@@ -483,7 +509,7 @@ export default function Home() {
 
       setStep("variants");
 
-      const variantPatches = await Promise.all(concepts.map((concept, i) => runVariantWork(concept, i)));
+      const variantPatches = await Promise.all(concepts.map((concept, i) => runLookbookWork(concept, i)));
       const finalVariants = initialVariants.map((variant, index) => ({
         ...variant,
         ...variantPatches[index],
@@ -495,7 +521,7 @@ export default function Home() {
       setStartedAt(null);
       setStep("done");
       saveHistory({
-        id: `${runStartedAt}`,
+        id: runId,
         keyword: runKeyword,
         createdAt: new Date(runStartedAt).toLocaleString("ko-KR", { hour12: false }),
         elapsedMs: finishedElapsedMs,
@@ -503,12 +529,14 @@ export default function Home() {
         variants: finalVariants,
         evaluationProcess: evaluationData,
       });
+      void attachShoppingLinks(runId, runKeyword, finalVariants);
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했어요.");
       setStep("idle");
       setStartedAt(null);
       setElapsedMs(getTimestamp() - runStartedAt);
       setLoadingPhase("hidden");
+      activeRunIdRef.current = null;
     }
   }
 
@@ -629,7 +657,7 @@ export default function Home() {
                 {step === s && (
                   <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-black dark:border-zinc-600 dark:border-t-white" />
                 )}
-                {s === "variants" ? "룩북·구매 링크" : s === "concept" ? "후보 평가" : s}
+                {s === "variants" ? "룩북" : s === "concept" ? "후보 평가" : s}
               </li>
             ))}
           </ol>

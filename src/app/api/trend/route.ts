@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { openai, TREND_MODEL } from "@/lib/openai";
+import { OPENAI_SERVICE_TIER, openai, TREND_MODEL } from "@/lib/openai";
 import { agentLog } from "@/lib/log";
 
 export async function POST(req: Request) {
@@ -9,11 +9,12 @@ export async function POST(req: Request) {
     agentLog(
       "trend",
       `"${keyword}" 키워드로 날짜·장소 날씨와 트렌드 조사 시작`,
-      `responses.create + web_search_preview · ${TREND_MODEL}`,
+      `responses.create + web_search_preview · ${TREND_MODEL} · ${OPENAI_SERVICE_TIER}`,
     );
 
     const response = await openai.responses.create({
       model: TREND_MODEL,
+      service_tier: OPENAI_SERVICE_TIER,
       tools: [{ type: "web_search_preview" }],
       input: `사용자 요청: "${keyword}"
 

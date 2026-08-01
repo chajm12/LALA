@@ -8,7 +8,7 @@ type StepKey = (typeof STEPS)[number];
 const STEP_TITLES: Record<StepKey, string> = {
   trend: "트렌드·날씨 조사 중",
   concept: "후보 생성·평가 중",
-  variants: "룩북·구매 링크 생성 중",
+  variants: "룩북 생성 중",
 };
 
 export default function LoadingScreen({
