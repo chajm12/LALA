@@ -11,15 +11,22 @@ function buildPrompt(concept: Record<string, unknown>, extra?: string) {
   return `Fashion lookbook photo of an avatar model wearing an outfit for the concept "${concept.name}". The model's apparent gender, age range, and styling MUST match this target customer profile: "${target}". Mood: ${concept.mood}. Color palette: ${colors}. Materials/fabric: ${materials}. Editorial fashion photography, full body, studio lighting.${extra ? ` ${extra}` : ""}`;
 }
 
-async function generateImage(prompt: string) {
-  const image = await openai.images.generate({
-    model: "gpt-image-1",
-    prompt,
-    size: "1024x1024",
-    n: 1,
-  });
-  const b64 = image.data?.[0]?.b64_json;
-  return b64 ? `data:image/png;base64,${b64}` : null;
+type GenerateResult = { imageUrl: string | null; error: string | null };
+
+async function generateImage(prompt: string): Promise<GenerateResult> {
+  try {
+    const image = await openai.images.generate({
+      model: "gpt-image-1",
+      prompt,
+      size: "1024x1024",
+      n: 1,
+    });
+    const b64 = image.data?.[0]?.b64_json;
+    return { imageUrl: b64 ? `data:image/png;base64,${b64}` : null, error: null };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "이미지 생성 중 알 수 없는 오류";
+    return { imageUrl: null, error: message };
+  }
 }
 
 async function critiqueImage(imageDataUrl: string, concept: Record<string, unknown>) {
@@ -39,14 +46,28 @@ async function critiqueImage(imageDataUrl: string, concept: Record<string, unkno
       },
     ],
   });
-  return JSON.parse(completion.choices[0].message.content ?? "{}");
+  const content = completion.choices[0].message.content;
+  return JSON.parse(content && content.length > 0 ? content : "{}");
 }
 
 export async function POST(req: Request) {
   const { concept } = await req.json();
 
   agentLog("lookbook", `룩북 이미지 생성 시작 (1차)`);
-  let imageUrl = await generateImage(buildPrompt(concept));
+  let gen = await generateImage(buildPrompt(concept));
+
+  if (!gen.imageUrl && gen.error) {
+    agentLog("lookbook", `✗ 생성 실패: ${gen.error} → 안전한 프롬프트로 1회 재시도`);
+    gen = await generateImage(
+      `${buildPrompt(concept)} Tasteful, fully clothed, professional catalog photography, no suggestive poses or framing.`,
+    );
+    if (!gen.imageUrl && gen.error) {
+      agentLog("lookbook", `✗ 재시도도 실패: ${gen.error}`);
+    }
+  }
+
+  let imageUrl = gen.imageUrl;
+  const generationError = gen.error;
   let verified = false;
   let mismatches: string[] = [];
   let retried = false;
@@ -72,11 +93,18 @@ export async function POST(req: Request) {
     }
 
     agentLog("lookbook", `⚠ 불일치 발견: ${mismatches.join(", ")} → 프롬프트 보강 후 재생성`);
-    imageUrl = await generateImage(
+    const retry = await generateImage(
       buildPrompt(concept, `Make sure to clearly include: ${mismatches.join("; ")}.`),
     );
+    imageUrl = retry.imageUrl;
     retried = true;
   }
 
-  return NextResponse.json({ imageUrl, verified, mismatches, retried });
+  return NextResponse.json({
+    imageUrl,
+    verified,
+    mismatches,
+    retried,
+    error: imageUrl ? null : generationError,
+  });
 }

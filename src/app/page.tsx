@@ -33,6 +33,33 @@ const stepLabels: Record<Step, string> = {
   done: "완료",
 };
 
+async function postJson(url: string, body: unknown) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  // A route can fail before it ever writes a JSON body (uncaught throw,
+  // network drop) - guard the parse so that shows up as a clear message
+  // instead of "Unexpected end of JSON input".
+  let data: Record<string, unknown> | null = null;
+  try {
+    data = await res.json();
+  } catch {
+    // leave data as null; res.ok check below produces the real error message
+  }
+
+  if (!res.ok) {
+    const message = (data?.error as string | undefined) ?? `${url} 요청 실패 (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  if (!data) {
+    throw new Error(`${url} 응답을 읽을 수 없어요 (빈 응답)`);
+  }
+  return data;
+}
+
 export default function Home() {
   const [keyword, setKeyword] = useState("");
   const [step, setStep] = useState<Step>("idle");
@@ -48,6 +75,7 @@ export default function Home() {
   const [lookbookVerified, setLookbookVerified] = useState(false);
   const [lookbookMismatches, setLookbookMismatches] = useState<string[]>([]);
   const [lookbookRetried, setLookbookRetried] = useState(false);
+  const [lookbookError, setLookbookError] = useState<string | null>(null);
   const resultsRef = useRef<HTMLElement>(null);
 
   const isRunning = step !== "idle" && step !== "done";
@@ -67,51 +95,38 @@ export default function Home() {
     setLookbookVerified(false);
     setLookbookMismatches([]);
     setLookbookRetried(false);
+    setLookbookError(null);
 
     try {
       setStep("trend");
       resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      const trendRes = await fetch("/api/trend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keyword }),
-      });
-      const trendData = await trendRes.json();
-      setTrend(trendData.trend);
+      const trendData = await postJson("/api/trend", { keyword });
+      setTrend(trendData.trend as string);
 
       setStep("concept");
-      const conceptRes = await fetch("/api/concept", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keyword, trend: trendData.trend }),
-      });
-      const conceptData = await conceptRes.json();
-      setConcept(conceptData.concept);
-      setContradictionIssue(conceptData.contradictionIssue ?? null);
+      const conceptData = await postJson("/api/concept", { keyword, trend: trendData.trend });
+      setConcept(conceptData.concept as Concept);
+      setContradictionIssue((conceptData.contradictionIssue as string) ?? null);
 
       setStep("lookbook");
-      const lookbookRes = await fetch("/api/lookbook", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ concept: conceptData.concept }),
-      });
-      const lookbookData = await lookbookRes.json();
-      setImageUrl(lookbookData.imageUrl);
-      setLookbookVerified(Boolean(lookbookData.verified));
-      setLookbookMismatches(Array.isArray(lookbookData.mismatches) ? lookbookData.mismatches : []);
-      setLookbookRetried(Boolean(lookbookData.retried));
+      try {
+        const lookbookData = await postJson("/api/lookbook", { concept: conceptData.concept });
+        setImageUrl((lookbookData.imageUrl as string) ?? null);
+        setLookbookVerified(Boolean(lookbookData.verified));
+        setLookbookMismatches(Array.isArray(lookbookData.mismatches) ? (lookbookData.mismatches as string[]) : []);
+        setLookbookRetried(Boolean(lookbookData.retried));
+        setLookbookError((lookbookData.error as string) ?? null);
+      } catch (e) {
+        // don't let a failed image generation (e.g. safety filter) kill the whole pipeline
+        setLookbookError(e instanceof Error ? e.message : "룩북 이미지 생성 실패");
+      }
 
       setStep("cost");
-      const costRes = await fetch("/api/cost", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ concept: conceptData.concept }),
-      });
-      const costData = await costRes.json();
-      setCost(costData.cost);
-      setFinalMaterials(costData.materials ?? null);
-      setSubstitutionReason(costData.substitutionReason ?? null);
-      setCostHistory(Array.isArray(costData.history) ? costData.history : null);
+      const costData = await postJson("/api/cost", { concept: conceptData.concept });
+      setCost(costData.cost as Cost);
+      setFinalMaterials((costData.materials as string[]) ?? null);
+      setSubstitutionReason((costData.substitutionReason as string) ?? null);
+      setCostHistory(Array.isArray(costData.history) ? (costData.history as CostIteration[]) : null);
 
       setStep("done");
     } catch (e) {
@@ -239,26 +254,34 @@ export default function Home() {
           </section>
         )}
 
-        {imageUrl && (
+        {(imageUrl || lookbookError) && (
           <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
             <h2 className="font-semibold text-black dark:text-zinc-50">3. Lookbook</h2>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={imageUrl}
-              alt="Generated lookbook"
-              className="mt-2 w-full rounded-lg"
-            />
-            <p
-              className={
-                lookbookVerified
-                  ? "mt-2 text-xs font-medium text-emerald-600 dark:text-emerald-400"
-                  : "mt-2 text-xs font-medium text-amber-600 dark:text-amber-400"
-              }
-            >
-              {lookbookVerified
-                ? `✓ 스펙(색상/소재/무드) 일치 확인됨${lookbookRetried ? " — 1회 재생성 후 통과" : ""}`
-                : `⚠ 일부 스펙 불일치${lookbookRetried ? " (1회 재생성했지만 여전히 남음)" : ""}: ${lookbookMismatches.join(", ")}`}
-            </p>
+            {imageUrl ? (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={imageUrl}
+                  alt="Generated lookbook"
+                  className="mt-2 w-full rounded-lg"
+                />
+                <p
+                  className={
+                    lookbookVerified
+                      ? "mt-2 text-xs font-medium text-emerald-600 dark:text-emerald-400"
+                      : "mt-2 text-xs font-medium text-amber-600 dark:text-amber-400"
+                  }
+                >
+                  {lookbookVerified
+                    ? `✓ 스펙(색상/소재/무드) 일치 확인됨${lookbookRetried ? " — 1회 재생성 후 통과" : ""}`
+                    : `⚠ 일부 스펙 불일치${lookbookRetried ? " (1회 재생성했지만 여전히 남음)" : ""}: ${lookbookMismatches.join(", ")}`}
+                </p>
+              </>
+            ) : (
+              <p className="mt-2 rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+                ✗ 이미지 생성 실패: {lookbookError}
+              </p>
+            )}
           </section>
         )}
 

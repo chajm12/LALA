@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { openai } from "@/lib/openai";
+import { openai, parseJsonContent } from "@/lib/openai";
 import { agentLog } from "@/lib/log";
 
 const MIN_MARGIN_RATE = 0.5;
@@ -37,7 +37,7 @@ async function estimateCost(
     ],
   });
 
-  return JSON.parse(completion.choices[0].message.content ?? "{}");
+  return parseJsonContent(completion.choices[0].message.content);
 }
 
 type MaterialCandidate = { material: string; note: string };
@@ -59,7 +59,7 @@ async function compareMaterialAlternatives(primaryMaterial: string, research: st
     ],
   });
 
-  return JSON.parse(completion.choices[0].message.content ?? "{}");
+  return parseJsonContent(completion.choices[0].message.content);
 }
 
 type CostIteration = {
@@ -77,98 +77,104 @@ type CostIteration = {
 };
 
 export async function POST(req: Request) {
-  const { concept } = await req.json();
-  let materials: string[] =
-    Array.isArray(concept.materials) && concept.materials.length
-      ? concept.materials
-      : [concept.mood ?? "general apparel fabric"];
+  try {
+    const { concept } = await req.json();
+    let materials: string[] =
+      Array.isArray(concept.materials) && concept.materials.length
+        ? concept.materials
+        : [concept.mood ?? "general apparel fabric"];
 
-  const history: CostIteration[] = [];
-  let reason: string | null = null;
-  let candidates: MaterialCandidate[] | null = null;
+    const history: CostIteration[] = [];
+    let reason: string | null = null;
+    let candidates: MaterialCandidate[] | null = null;
 
-  for (let i = 0; i <= MAX_RETRIES; i++) {
-    agentLog("cost", `[${i}회차] 시장 조사 시작 — 원단: ${materials.join(", ")}`);
-    const research = await researchMarket(concept, materials);
-    const raw = await estimateCost(concept, materials, research);
+    for (let i = 0; i <= MAX_RETRIES; i++) {
+      agentLog("cost", `[${i}회차] 시장 조사 시작 — 원단: ${materials.join(", ")}`);
+      const research = await researchMarket(concept, materials);
+      const raw = await estimateCost(concept, materials, research);
 
-    const materialCost = Number(raw.materialCost) || 0;
-    const laborCost = Number(raw.laborCost) || 0;
-    const overheadCost = Number(raw.overheadCost) || 0;
-    const totalCost = materialCost + laborCost + overheadCost;
+      const materialCost = Number(raw.materialCost) || 0;
+      const laborCost = Number(raw.laborCost) || 0;
+      const overheadCost = Number(raw.overheadCost) || 0;
+      const totalCost = materialCost + laborCost + overheadCost;
 
-    const marginRate = Math.min(
-      Math.max(Number(raw.marginRate) || 0.65, MIN_MARGIN_RATE),
-      MAX_MARGIN_RATE,
-    );
-    const sellCost = Math.round(totalCost / (1 - marginRate));
+      const marginRate = Math.min(
+        Math.max(Number(raw.marginRate) || 0.65, MIN_MARGIN_RATE),
+        MAX_MARGIN_RATE,
+      );
+      const sellCost = Math.round(totalCost / (1 - marginRate));
 
-    agentLog(
-      "cost",
-      `[${i}회차] 원가=${totalCost.toLocaleString()}원, 마진=${Math.round(marginRate * 100)}%, 판매가=${sellCost.toLocaleString()}원`,
-    );
+      agentLog(
+        "cost",
+        `[${i}회차] 원가=${totalCost.toLocaleString()}원, 마진=${Math.round(marginRate * 100)}%, 판매가=${sellCost.toLocaleString()}원`,
+      );
 
-    history.push({
-      iteration: i,
-      materials,
-      materialCost,
-      laborCost,
-      overheadCost,
-      totalCost,
-      marginRate,
-      sellCost,
-      breakdown: Array.isArray(raw.breakdown) ? raw.breakdown : [],
-      reason,
-      candidates,
+      history.push({
+        iteration: i,
+        materials,
+        materialCost,
+        laborCost,
+        overheadCost,
+        totalCost,
+        marginRate,
+        sellCost,
+        breakdown: Array.isArray(raw.breakdown) ? raw.breakdown : [],
+        reason,
+        candidates,
+      });
+
+      if (marginRate >= MARGIN_RETRY_THRESHOLD) {
+        agentLog("cost", `✓ 마진 기준(${Math.round(MARGIN_RETRY_THRESHOLD * 100)}%) 충족 → 재평가 종료`);
+        break;
+      }
+      if (i === MAX_RETRIES) {
+        agentLog("cost", `⚠ 마진 기준 미달이지만 최대 재시도(${MAX_RETRIES}) 도달 → 종료`);
+        break;
+      }
+
+      agentLog(
+        "cost",
+        `⚠ 마진 ${Math.round(marginRate * 100)}% < 기준 ${Math.round(MARGIN_RETRY_THRESHOLD * 100)}% → 대체 원단 비교 탐색`,
+      );
+      const alt = await compareMaterialAlternatives(materials[0], research);
+      if (!Array.isArray(alt.candidates) || !alt.candidates.length || !alt.selected) {
+        agentLog("cost", `✗ 대체 원단 탐색 실패 → 재평가 종료`);
+        break;
+      }
+
+      candidates = alt.candidates;
+      reason = typeof alt.reason === "string" ? alt.reason : null;
+      materials = [alt.selected, ...materials.slice(1)];
+      agentLog(
+        "cost",
+        `대체 원단 후보 ${alt.candidates.length}개 비교 → "${alt.selected}" 선택 (${reason})`,
+      );
+    }
+
+    agentLog("cost", `총 ${history.length}회 평가 완료`);
+
+    const last = history[history.length - 1];
+    const cost = {
+      materialCost: last.materialCost,
+      laborCost: last.laborCost,
+      overheadCost: last.overheadCost,
+      totalCost: last.totalCost,
+      marginRate: last.marginRate,
+      sellCost: last.sellCost,
+      breakdown: last.breakdown,
+    };
+
+    return NextResponse.json({
+      cost,
+      materials: last.materials,
+      materialsUpdated: history.length > 1,
+      substitutionReason: last.reason,
+      candidates: last.candidates,
+      history,
     });
-
-    if (marginRate >= MARGIN_RETRY_THRESHOLD) {
-      agentLog("cost", `✓ 마진 기준(${Math.round(MARGIN_RETRY_THRESHOLD * 100)}%) 충족 → 재평가 종료`);
-      break;
-    }
-    if (i === MAX_RETRIES) {
-      agentLog("cost", `⚠ 마진 기준 미달이지만 최대 재시도(${MAX_RETRIES}) 도달 → 종료`);
-      break;
-    }
-
-    agentLog(
-      "cost",
-      `⚠ 마진 ${Math.round(marginRate * 100)}% < 기준 ${Math.round(MARGIN_RETRY_THRESHOLD * 100)}% → 대체 원단 비교 탐색`,
-    );
-    const alt = await compareMaterialAlternatives(materials[0], research);
-    if (!Array.isArray(alt.candidates) || !alt.candidates.length || !alt.selected) {
-      agentLog("cost", `✗ 대체 원단 탐색 실패 → 재평가 종료`);
-      break;
-    }
-
-    candidates = alt.candidates;
-    reason = typeof alt.reason === "string" ? alt.reason : null;
-    materials = [alt.selected, ...materials.slice(1)];
-    agentLog(
-      "cost",
-      `대체 원단 후보 ${alt.candidates.length}개 비교 → "${alt.selected}" 선택 (${reason})`,
-    );
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "원가 산출 중 알 수 없는 오류";
+    agentLog("cost", `✗ 요청 실패: ${message}`);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-
-  agentLog("cost", `총 ${history.length}회 평가 완료`);
-
-  const last = history[history.length - 1];
-  const cost = {
-    materialCost: last.materialCost,
-    laborCost: last.laborCost,
-    overheadCost: last.overheadCost,
-    totalCost: last.totalCost,
-    marginRate: last.marginRate,
-    sellCost: last.sellCost,
-    breakdown: last.breakdown,
-  };
-
-  return NextResponse.json({
-    cost,
-    materials: last.materials,
-    materialsUpdated: history.length > 1,
-    substitutionReason: last.reason,
-    candidates: last.candidates,
-    history,
-  });
 }
