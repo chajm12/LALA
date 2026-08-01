@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 type Concept = {
   name: string;
@@ -20,6 +20,15 @@ type Cost = {
 
 type Step = "idle" | "trend" | "concept" | "lookbook" | "cost" | "done";
 
+const stepLabels: Record<Step, string> = {
+  idle: "생성",
+  trend: "트렌드 조사 중...",
+  concept: "컨셉 기획 중...",
+  lookbook: "룩북 생성 중...",
+  cost: "원가 산출 중...",
+  done: "완료",
+};
+
 export default function Home() {
   const [keyword, setKeyword] = useState("");
   const [step, setStep] = useState<Step>("idle");
@@ -28,6 +37,7 @@ export default function Home() {
   const [concept, setConcept] = useState<Concept | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [cost, setCost] = useState<Cost | null>(null);
+  const resultsRef = useRef<HTMLElement>(null);
 
   const isRunning = step !== "idle" && step !== "done";
 
@@ -42,6 +52,7 @@ export default function Home() {
 
     try {
       setStep("trend");
+      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       const trendRes = await fetch("/api/trend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -119,9 +130,16 @@ export default function Home() {
           <button
             onClick={runPipeline}
             disabled={isRunning || !keyword.trim()}
-            className="rounded-lg bg-white px-5 py-3 font-medium text-black disabled:opacity-40"
+            className={
+              isRunning
+                ? "flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-white/15 px-5 py-3 font-medium text-white"
+                : "rounded-lg bg-white px-5 py-3 font-medium text-black disabled:opacity-40"
+            }
           >
-            {isRunning ? "진행 중..." : "생성"}
+            {isRunning && (
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            )}
+            {isRunning ? stepLabels[step] : "생성"}
           </button>
         </div>
 
@@ -131,7 +149,10 @@ export default function Home() {
       </section>
 
       {/* Pipeline results */}
-      <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-16">
+      <main
+        ref={resultsRef}
+        className="mx-auto flex min-h-screen max-w-2xl scroll-mt-6 flex-col gap-8 px-6 py-16"
+      >
         {step !== "idle" && (
           <ol className="flex gap-4 text-sm text-zinc-500">
             {(["trend", "concept", "lookbook", "cost"] as Step[]).map((s) => (
@@ -139,12 +160,15 @@ export default function Home() {
                 key={s}
                 className={
                   step === s
-                    ? "font-semibold text-black dark:text-white"
+                    ? "flex items-center gap-1.5 font-semibold text-black dark:text-white"
                     : trend && (s === "trend" || step === "done")
                     ? "text-zinc-400 line-through"
                     : ""
                 }
               >
+                {step === s && (
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-black dark:border-zinc-600 dark:border-t-white" />
+                )}
                 {s}
               </li>
             ))}
