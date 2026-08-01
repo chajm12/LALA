@@ -595,7 +595,7 @@ export default function Home() {
             <input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="예: 8월 10일 성수동 카페 데이트, 175cm 70kg"
+              placeholder="예: 180cm 90kg 남성, 이번 주말 제주도 여행, 결혼식 하객룩"
               className="flex-1 rounded-none border border-zinc-200 bg-white px-4 py-3 text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none"
               disabled={isRunning}
             />
