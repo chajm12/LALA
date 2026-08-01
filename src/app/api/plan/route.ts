@@ -118,6 +118,46 @@ function selectFallbackFinal(concepts: Concept[], evaluations: Evaluation[]) {
     .slice(0, 2);
 }
 
+function rankEvaluations(evaluations: Evaluation[]) {
+  return [...evaluations]
+    .sort((a, b) => {
+      if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
+      if (b.trendScore !== a.trendScore) return b.trendScore - a.trendScore;
+      if (b.bodyFitScore !== a.bodyFitScore) return b.bodyFitScore - a.bodyFitScore;
+      if (b.weatherScore !== a.weatherScore) return b.weatherScore - a.weatherScore;
+      return a.name.localeCompare(b.name, "ko");
+    })
+    .map((item, index) => ({
+      ...item,
+      rank: index + 1,
+    }));
+}
+
+function rankRound1Evaluations(evaluations: Evaluation[]) {
+  return rankEvaluations(evaluations).map((item) => ({
+    ...item,
+    decisionStatus: undefined,
+    decisionReason: undefined,
+  }));
+}
+
+function applyFinalDecisions(evaluations: Evaluation[], finalConcepts: Concept[]) {
+  const finalIds = new Set(finalConcepts.map((concept) => concept.id));
+  return rankEvaluations(evaluations).map((item) => {
+    const selected = finalIds.has(item.id);
+    const fallbackDecision = selected
+      ? `${item.rank}위, 재평가 총점 ${item.totalScore}점으로 상위 2개 안에 들어 최종 룩북 후보로 선택됐어요.`
+      : `${item.rank}위, 재평가 총점 ${item.totalScore}점으로 상위 2개보다 낮아 최종 룩북에서는 제외됐어요.`;
+    return {
+      ...item,
+      decisionStatus: selected ? "선택" : "탈락",
+      decisionReason: item.decisionReason?.trim()
+        ? `${item.rank}위 · ${item.decisionReason}`
+        : fallbackDecision,
+    } satisfies Evaluation;
+  });
+}
+
 export async function POST(req: Request) {
   try {
     const { keyword, trend } = await req.json();
@@ -190,11 +230,10 @@ id, name, weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore,
     const originalCandidates = normalizeConcepts(parsed.originalCandidates);
     const repairedCandidates = normalizeConcepts(parsed.repairedCandidates);
     const candidateBase = repairedCandidates.length ? repairedCandidates : originalCandidates;
-    const round1 = normalizeEvaluations(parsed.round1, originalCandidates);
-    const round2 = normalizeEvaluations(parsed.round2, candidateBase);
-    const finalConcepts = normalizeConcepts(parsed.finalConcepts).length
-      ? normalizeConcepts(parsed.finalConcepts).slice(0, 2)
-      : selectFallbackFinal(candidateBase, round2);
+    const round1 = rankRound1Evaluations(normalizeEvaluations(parsed.round1, originalCandidates));
+    const normalizedRound2 = normalizeEvaluations(parsed.round2, candidateBase);
+    const finalConcepts = selectFallbackFinal(candidateBase, normalizedRound2);
+    const round2 = applyFinalDecisions(normalizedRound2, finalConcepts);
 
     if (originalCandidates.length < 5 || candidateBase.length < 5 || finalConcepts.length < 2) {
       throw new Error("통합 스타일링 계획 생성에 실패했어요.");

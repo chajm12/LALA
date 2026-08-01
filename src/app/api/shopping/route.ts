@@ -17,6 +17,11 @@ type OutfitRequirement = {
   item: string;
 };
 
+type LinkValidation = {
+  ok: boolean;
+  reason?: string;
+};
+
 const CATEGORY_KEYWORDS = [
   { category: "모자", patterns: ["모자", "볼캡", "캡", "비니", "버킷햇", "hat", "cap", "beanie"] },
   { category: "상의(이너)", patterns: ["티셔츠", "티", "셔츠", "이너", "니트", "스웨터", "맨투맨", "후드", "top", "inner", "t-shirt", "shirt"] },
@@ -170,6 +175,115 @@ function normalizeLinks(value: unknown, options: { allowSearchFallback?: boolean
     })
     .filter((item): item is ShoppingLink => item !== null)
     .slice(0, 12);
+}
+
+const UNAVAILABLE_TEXT_PATTERNS = [
+  /상품이\s*존재하지\s*않/i,
+  /존재하지\s*않는\s*상품/i,
+  /판매\s*종료/i,
+  /품절/i,
+  /일시\s*품절/i,
+  /재고가\s*없/i,
+  /검색\s*결과가\s*없/i,
+  /검색결과가\s*없/i,
+  /찾을\s*수\s*없/i,
+  /페이지를\s*찾을\s*수\s*없/i,
+  /not\s*found/i,
+  /sold\s*out/i,
+  /out\s*of\s*stock/i,
+  /no\s*results/i,
+  /no\s*products/i,
+];
+
+const PRODUCT_PAGE_HINTS = [
+  /og:type["']?\s*content=["']product/i,
+  /product:price/i,
+  /application\/ld\+json/i,
+  /"@type"\s*:\s*"Product"/i,
+  /장바구니/i,
+  /구매하기/i,
+  /바로\s*구매/i,
+  /상품\s*정보/i,
+  /판매가/i,
+  /price/i,
+];
+
+function stripHtml(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function validateShoppingLink(link: ShoppingLink): Promise<LinkValidation> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(link.url, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+
+    if (!response.ok) {
+      return { ok: false, reason: `HTTP ${response.status}` };
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/html")) {
+      return { ok: true };
+    }
+
+    const html = await response.text();
+    const bodyText = stripHtml(html).slice(0, 50000);
+    if (UNAVAILABLE_TEXT_PATTERNS.some((pattern) => pattern.test(bodyText))) {
+      return { ok: false, reason: "없는 상품/품절/빈 결과 문구 감지" };
+    }
+
+    if (isDirectProductUrl(link.url) && PRODUCT_PAGE_HINTS.some((pattern) => pattern.test(html))) {
+      return { ok: true };
+    }
+
+    if (!isDirectProductUrl(link.url) && bodyText.length < 800) {
+      return { ok: false, reason: "상품 정보가 부족한 페이지" };
+    }
+
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      reason: e instanceof Error && e.name === "AbortError" ? "검증 타임아웃" : "페이지 접근 실패",
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function filterValidShoppingLinks(links: ShoppingLink[]) {
+  const results = await Promise.all(
+    links.map(async (link) => ({
+      link,
+      validation: await validateShoppingLink(link),
+    })),
+  );
+  const invalid = results.filter((result) => !result.validation.ok);
+  if (invalid.length) {
+    agentLog(
+      "shopping",
+      `실제 상품 없음/접근 실패 링크 ${invalid.length}개 제거: ${invalid
+        .map((item) => `${item.link.item}(${item.validation.reason})`)
+        .join(", ")}`,
+    );
+  }
+  return results.filter((result) => result.validation.ok).map((result) => result.link);
 }
 
 async function searchFallbackLinks({
@@ -334,7 +448,7 @@ links는 직접 상품 상세 링크만 포함하고, 착용 카테고리 수만
     });
 
     const parsed = parseJsonObject(response.output_text);
-    let links = normalizeLinks((parsed as Record<string, unknown>).links);
+    let links = await filterValidShoppingLinks(normalizeLinks((parsed as Record<string, unknown>).links));
     const missingItems = getMissingOutfitItems(outfitItems, links);
     if (links.length === 0 || missingItems.length > 0) {
       agentLog(
@@ -351,7 +465,7 @@ links는 직접 상품 상세 링크만 포함하고, 착용 카테고리 수만
         outfitItemText: fallbackItems.length ? fallbackItems.join(", ") : outfitItemText,
         focusCategories,
       });
-      links = mergeLinks(links, fallbackLinks);
+      links = mergeLinks(links, await filterValidShoppingLinks(fallbackLinks));
     }
     links = sortFocusLinks(links, focusCategories).slice(0, 12);
     agentLog("shopping", `구매 링크 ${links.length}개 검색 완료`);

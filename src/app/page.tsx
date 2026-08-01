@@ -257,19 +257,39 @@ function AgentTracePanel({ step }: { step: Step }) {
 function EvaluationList({
   title,
   evaluations,
+  previousEvaluations,
   hideSelectedDetails = false,
 }: {
   title: string;
   evaluations: Evaluation[];
+  previousEvaluations?: Evaluation[];
   hideSelectedDetails?: boolean;
 }) {
+  const previousRankById = new Map(
+    (previousEvaluations ?? []).map((evaluation, index) => [
+      evaluation.id,
+      evaluation.rank ?? index + 1,
+    ]),
+  );
+
+  function getRankMovement(evaluation: Evaluation, index: number) {
+    const previousRank = previousRankById.get(evaluation.id);
+    if (previousRank === undefined) return null;
+    const currentRank = evaluation.rank ?? index + 1;
+    if (currentRank < previousRank) return { symbol: "▲", label: "상승", className: "text-emerald-600" };
+    if (currentRank > previousRank) return { symbol: "▼", label: "하강", className: "text-red-600" };
+    return { symbol: "—", label: "유지", className: "text-zinc-500" };
+  }
+
   return (
     <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
       <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
         {title}
       </p>
       <div className="mt-2 flex flex-col gap-3">
-        {evaluations.map((evaluation) => (
+        {evaluations.map((evaluation, index) => {
+          const rankMovement = getRankMovement(evaluation, index);
+          return (
           <div key={`${title}-${evaluation.id}`} className="rounded-md bg-zinc-50 p-3 dark:bg-zinc-900">
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -294,9 +314,19 @@ function EvaluationList({
                   날씨 {evaluation.weatherScore} · 장소 {evaluation.placeScore} · 체형/핏 {evaluation.bodyFitScore} · 트렌드 {evaluation.trendScore} · 실용 {evaluation.practicalityScore}
                 </p>
               </div>
-              <span className="rounded-full bg-violet-100 px-2 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-950 dark:text-violet-300">
-                총점 {evaluation.totalScore}
-              </span>
+              <div className="flex shrink-0 items-center gap-2">
+                {rankMovement && (
+                  <span
+                    className={`text-xs font-semibold ${rankMovement.className}`}
+                    title={`1차 평가 대비 ${rankMovement.label}`}
+                  >
+                    {rankMovement.symbol}
+                  </span>
+                )}
+                <span className="rounded-full bg-violet-100 px-2 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+                  총점 {evaluation.totalScore}
+                </span>
+              </div>
             </div>
             <div className="mt-2 grid gap-2 text-xs text-zinc-600 dark:text-zinc-300">
               {evaluation.decisionReason && (
@@ -319,7 +349,8 @@ function EvaluationList({
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -708,7 +739,12 @@ export default function Home() {
 
             <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
               <EvaluationList title="1차 평가" evaluations={evaluationProcess.round1} />
-              <EvaluationList title="재평가" evaluations={evaluationProcess.round2} hideSelectedDetails />
+              <EvaluationList
+                title="재평가"
+                evaluations={evaluationProcess.round2}
+                previousEvaluations={evaluationProcess.round1}
+                hideSelectedDetails
+              />
             </div>
 
             <p className="mt-4 text-sm font-medium text-black dark:text-zinc-50">
