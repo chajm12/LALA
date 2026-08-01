@@ -137,7 +137,6 @@ export default function Home() {
 
     try {
       setStep("trend");
-      resultsRef.current?.scrollIntoView({ behavior: "auto", block: "start" });
       const trendData = await postJson("/api/trend", { keyword });
       setTrend(trendData.trend as string);
 
@@ -174,6 +173,10 @@ export default function Home() {
       // and (with the transition class always on) animated back down
       // through the viewport, looking like an up-then-down bounce.
       setLoadingPhase("exiting");
+      // Scroll now (not earlier) so the page visibly scrolls down to Trend
+      // in sync with the loading screen sliding up, instead of having
+      // already jumped there silently behind the overlay.
+      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
 
       await Promise.all(concepts.map((concept, i) => runVariantWork(concept, i)));
 
