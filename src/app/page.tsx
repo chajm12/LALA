@@ -33,6 +33,7 @@ type Variant = {
   cost: Cost | null;
   finalMaterials: string[] | null;
   substitutionReason: string | null;
+  substitutionTier: string | null;
   costHistory: CostIteration[] | null;
   costError: string | null;
 };
@@ -114,6 +115,7 @@ export default function Home() {
         cost: costData.cost as Cost,
         finalMaterials: (costData.materials as string[]) ?? null,
         substitutionReason: (costData.substitutionReason as string) ?? null,
+        substitutionTier: (costData.substitutionTier as string) ?? null,
         costHistory: Array.isArray(costData.history) ? (costData.history as CostIteration[]) : null,
       });
     } catch (e) {
@@ -154,6 +156,7 @@ export default function Home() {
         cost: null,
         finalMaterials: null,
         substitutionReason: null,
+        substitutionTier: null,
         costHistory: null,
         costError: null,
       }));
@@ -296,7 +299,9 @@ export default function Home() {
                   )}
                   {v.substitutionReason && (
                     <div className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                      <p className="font-semibold">💡 왜 원단이 바뀌었나요?</p>
+                      <p className="font-semibold">
+                        💡 왜 원단이 바뀌었나요?{v.substitutionTier ? ` (${v.substitutionTier}에서 탐색)` : ""}
+                      </p>
                       <p className="mt-0.5">
                         원가 절감을 위해 원단을 자동으로 대체했어요: {v.substitutionReason}
                       </p>

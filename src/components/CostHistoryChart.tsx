@@ -4,6 +4,7 @@ type MaterialCandidate = { material: string; note: string };
 
 export type CostIteration = {
   iteration: number;
+  tierLabel: string | null;
   materials: string[];
   materialCost: number;
   laborCost: number;
@@ -82,9 +83,9 @@ export default function CostHistoryChart({ history }: { history: CostIteration[]
                 x={x + barWidth / 2}
                 y={chartHeight + 16}
                 textAnchor="middle"
-                className="fill-zinc-500 text-[10px]"
+                className="fill-zinc-500 text-[9px]"
               >
-                {h.iteration === 0 ? "초기" : `${h.iteration}차`}
+                {h.iteration === 0 ? "초기" : h.tierLabel ?? `${h.iteration}차`}
               </text>
               {delta !== null && delta !== 0 && (
                 <text
@@ -119,7 +120,7 @@ export default function CostHistoryChart({ history }: { history: CostIteration[]
           <tbody>
             {history.map((h) => (
               <tr key={h.iteration} className="border-b border-zinc-100 dark:border-zinc-900">
-                <td className="py-1 pr-3">{h.iteration === 0 ? "초기" : `${h.iteration}차`}</td>
+                <td className="py-1 pr-3">{h.iteration === 0 ? "초기" : h.tierLabel ?? `${h.iteration}차`}</td>
                 <td className="py-1 pr-3">{h.materials[0]}</td>
                 <td className="py-1 pr-3">{Math.round(h.marginRate * 100)}%</td>
                 <td className="py-1 pr-3">{fmt(h.sellCost)} KRW</td>
