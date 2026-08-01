@@ -94,15 +94,15 @@ export default function Home() {
           frameBorder="0"
           className="absolute inset-0 h-full w-full"
         />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/80" />
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 text-center">
-          <span className="text-xs font-medium tracking-[0.3em] text-violet-300/80 uppercase">
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_bottom,transparent_0%,transparent_40%,rgba(0,0,0,0.55)_60%,rgba(0,0,0,0.93)_100%)]" />
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 text-center [text-shadow:0_2px_24px_rgba(0,0,0,0.85)]">
+          <span className="text-xs font-medium tracking-[0.3em] text-violet-200 uppercase">
             AI Fashion Director
           </span>
-          <h1 className="bg-gradient-to-b from-white to-violet-200 bg-clip-text text-5xl font-bold tracking-tight text-transparent sm:text-6xl">
+          <h1 className="text-5xl font-bold tracking-tight text-white sm:text-6xl">
             Fashion Planning Agent
           </h1>
-          <p className="max-w-md text-sm text-violet-100/70 sm:text-base">
+          <p className="max-w-md text-sm text-violet-100 sm:text-base">
             한 줄의 아이디어만으로 트렌드 조사부터 룩북, 원가 산출까지
           </p>
         </div>
