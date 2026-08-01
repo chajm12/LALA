@@ -85,17 +85,31 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 px-6 py-16 font-sans dark:bg-black">
-      <main className="mx-auto flex max-w-2xl flex-col gap-8">
-        <div>
-          <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">
+    <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
+      {/* Hero */}
+      <section className="relative h-[70vh] w-full overflow-hidden bg-black">
+        <iframe
+          src="https://my.spline.design/retrofuturismbganimation-ekg1AOKnE6ZMIXQPsPPfYxw2/"
+          title="Retro Futurism 3D Background"
+          frameBorder="0"
+          className="absolute inset-0 h-full w-full"
+        />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/80" />
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 text-center">
+          <span className="text-xs font-medium tracking-[0.3em] text-violet-300/80 uppercase">
+            AI Fashion Director
+          </span>
+          <h1 className="bg-gradient-to-b from-white to-violet-200 bg-clip-text text-5xl font-bold tracking-tight text-transparent sm:text-6xl">
             Fashion Planning Agent
           </h1>
-          <p className="mt-2 text-zinc-600 dark:text-zinc-400">
-            한 줄의 아이디어/키워드만 입력하면 트렌드 조사 → 컨셉 기획 → 룩북 → 원가 산출까지 자동으로 진행합니다.
+          <p className="max-w-md text-sm text-violet-100/70 sm:text-base">
+            한 줄의 아이디어만으로 트렌드 조사부터 룩북, 원가 산출까지
           </p>
         </div>
+      </section>
 
+      {/* Input + pipeline */}
+      <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-16">
         <div className="flex gap-2">
           <input
             value={keyword}
