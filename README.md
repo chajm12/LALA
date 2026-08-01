@@ -17,7 +17,7 @@
 
 ```bash
 cp .env.example .env
-# .env에 ANTHROPIC_API_KEY 채워넣기
+# .env에 OPENAI_API_KEY 채워넣기
 ```
 
 ### Python

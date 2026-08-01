@@ -1,2 +1,2 @@
-anthropic
+openai
 python-dotenv

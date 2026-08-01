@@ -1,15 +1,16 @@
-import "dotenv/config";
-import Anthropic from "@anthropic-ai/sdk";
+import dotenv from "dotenv";
+import OpenAI from "openai";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+dotenv.config({ path: "../.env" });
+
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function main() {
-  const message = await client.messages.create({
-    model: "claude-sonnet-5",
-    max_tokens: 1024,
-    messages: [{ role: "user", content: "Hello, Claude" }],
+  const response = await client.chat.completions.create({
+    model: "gpt-4o",
+    messages: [{ role: "user", content: "Hello, OpenAI" }],
   });
-  console.log(message.content[0]);
+  console.log(response.choices[0].message.content);
 }
 
 main();

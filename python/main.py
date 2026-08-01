@@ -1,20 +1,19 @@
 import os
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv()
 
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
 def main() -> None:
-    message = client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": "Hello, Claude"}],
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Hello, OpenAI"}],
     )
-    print(message.content[0].text)
+    print(response.choices[0].message.content)
 
 
 if __name__ == "__main__":
