@@ -1,0 +1,85 @@
+<!doctype html><meta charset="utf-8">
+<title>Tier 1 — 2x2 검증</title>
+<style>
+ body{font-family:'Noto Sans KR',sans-serif;max-width:1400px;margin:40px auto;padding:0 24px;color:#222}
+ h1{margin-bottom:4px}
+ h2{margin-top:56px;border-bottom:2px solid #eee;padding-bottom:8px;font-size:17px}
+ .pair{display:flex;gap:32px;flex-wrap:wrap;align-items:flex-start}
+ .stack{position:relative;width:480px}
+ .full{width:100%;display:block;border:1px solid #ddd;border-radius:8px}
+ .cross{position:absolute;inset:0;pointer-events:none}
+ .cross i{position:absolute;background:rgba(255,0,0,.75)}
+ .cross .v{left:50%;top:0;bottom:0;width:1px}
+ .cross .h{top:50%;left:0;right:0;height:1px}
+ .quads{display:grid;grid-template-columns:repeat(2,232px);gap:8px}
+ .q{margin:0} .q img{width:100%;border:1px solid #ddd;border-radius:6px;display:block}
+ figcaption{font-size:11px;color:#999;text-align:center;margin-top:4px}
+ .cap{font-size:12px;color:#777;line-height:1.6;margin-top:10px}
+ .check{background:#fafafa;border-left:3px solid #333;padding:14px 18px;font-size:14px;line-height:1.9}
+</style>
+<h1>Tier 1 — 2x2 4컷 만화 검증</h1>
+<div class="check">
+ <b>판정 기준</b><br>
+ ① 패널 경계가 빨간 십자선에 맞는가 → 어긋나면 오버레이 좌표 계산 불가<br>
+ ② P1~P4의 인물이 동일한가 → 다르면 2x2 방식의 전제가 무너짐<br>
+ ③ 말풍선 한글이 온전한가 / 분할선에 잘리지 않는가<br>
+ ④ 읽기 순서(좌상→우상→좌하→우하)가 스토리 순서와 일치하는가<br>
+ ⑤ 말풍선 밖에 글자가 섞였는가
+</div>
+
+<h2>gpt-image-2__1024x1024__medium__run1 · 62.6s</h2>
+<div class="pair">
+  <div>
+    <div class="stack">
+      <img class="full" src="gpt-image-2__1024x1024__medium__run1.png"/>
+      <div class="cross"><i class="v"></i><i class="h"></i></div>
+    </div>
+    <p class="cap">빨간 십자선 = 정확한 50% 지점.<br>패널 경계가 선에 맞는지 확인</p>
+  </div>
+  <div>
+    <div class="quads"><figure class="q"><img src="gpt-image-2__1024x1024__medium__run1__P1.png"/><figcaption><b>P1</b> 기대: the boy sits at a desk looking confuse…<br>대사: 전자는 공처럼 한 곳에 있는 거 아니야?</figcaption></figure><figure class="q"><img src="gpt-image-2__1024x1024__medium__run1__P2.png"/><figcaption><b>P2</b> 기대: the boy watches a spinning coin blurri…<br>대사: 동전이 돌 때는 앞뒤가 정해져 있지 않네?</figcaption></figure><figure class="q"><img src="gpt-image-2__1024x1024__medium__run1__P3.png"/><figcaption><b>P3</b> 기대: the boy points at a cloud-shaped glow …<br>대사: 전자도 여기 있을 확률로만 알 수 있구나!</figcaption></figure><figure class="q"><img src="gpt-image-2__1024x1024__medium__run1__P4.png"/><figcaption><b>P4</b> 기대: the boy smiles confidently with one fi…<br>대사: 관측하기 전엔 정해지지 않는 게 양자역학이야!</figcaption></figure></div>
+    <p class="cap">자동 4분할 결과.<br>네 명이 같은 인물인지, 대사가 온전한지 확인</p>
+  </div>
+</div>
+<h2>gpt-image-2__1024x1024__medium__run2 · 63.5s</h2>
+<div class="pair">
+  <div>
+    <div class="stack">
+      <img class="full" src="gpt-image-2__1024x1024__medium__run2.png"/>
+      <div class="cross"><i class="v"></i><i class="h"></i></div>
+    </div>
+    <p class="cap">빨간 십자선 = 정확한 50% 지점.<br>패널 경계가 선에 맞는지 확인</p>
+  </div>
+  <div>
+    <div class="quads"><figure class="q"><img src="gpt-image-2__1024x1024__medium__run2__P1.png"/><figcaption><b>P1</b> 기대: the boy sits at a desk looking confuse…<br>대사: 전자는 공처럼 한 곳에 있는 거 아니야?</figcaption></figure><figure class="q"><img src="gpt-image-2__1024x1024__medium__run2__P2.png"/><figcaption><b>P2</b> 기대: the boy watches a spinning coin blurri…<br>대사: 동전이 돌 때는 앞뒤가 정해져 있지 않네?</figcaption></figure><figure class="q"><img src="gpt-image-2__1024x1024__medium__run2__P3.png"/><figcaption><b>P3</b> 기대: the boy points at a cloud-shaped glow …<br>대사: 전자도 여기 있을 확률로만 알 수 있구나!</figcaption></figure><figure class="q"><img src="gpt-image-2__1024x1024__medium__run2__P4.png"/><figcaption><b>P4</b> 기대: the boy smiles confidently with one fi…<br>대사: 관측하기 전엔 정해지지 않는 게 양자역학이야!</figcaption></figure></div>
+    <p class="cap">자동 4분할 결과.<br>네 명이 같은 인물인지, 대사가 온전한지 확인</p>
+  </div>
+</div>
+<h2>gpt-image-2__1536x1024__medium__run1 · 48.0s</h2>
+<div class="pair">
+  <div>
+    <div class="stack">
+      <img class="full" src="gpt-image-2__1536x1024__medium__run1.png"/>
+      <div class="cross"><i class="v"></i><i class="h"></i></div>
+    </div>
+    <p class="cap">빨간 십자선 = 정확한 50% 지점.<br>패널 경계가 선에 맞는지 확인</p>
+  </div>
+  <div>
+    <div class="quads"><figure class="q"><img src="gpt-image-2__1536x1024__medium__run1__P1.png"/><figcaption><b>P1</b> 기대: the boy sits at a desk looking confuse…<br>대사: 전자는 공처럼 한 곳에 있는 거 아니야?</figcaption></figure><figure class="q"><img src="gpt-image-2__1536x1024__medium__run1__P2.png"/><figcaption><b>P2</b> 기대: the boy watches a spinning coin blurri…<br>대사: 동전이 돌 때는 앞뒤가 정해져 있지 않네?</figcaption></figure><figure class="q"><img src="gpt-image-2__1536x1024__medium__run1__P3.png"/><figcaption><b>P3</b> 기대: the boy points at a cloud-shaped glow …<br>대사: 전자도 여기 있을 확률로만 알 수 있구나!</figcaption></figure><figure class="q"><img src="gpt-image-2__1536x1024__medium__run1__P4.png"/><figcaption><b>P4</b> 기대: the boy smiles confidently with one fi…<br>대사: 관측하기 전엔 정해지지 않는 게 양자역학이야!</figcaption></figure></div>
+    <p class="cap">자동 4분할 결과.<br>네 명이 같은 인물인지, 대사가 온전한지 확인</p>
+  </div>
+</div>
+<h2>gpt-image-2__1536x1024__medium__run2 · 46.6s</h2>
+<div class="pair">
+  <div>
+    <div class="stack">
+      <img class="full" src="gpt-image-2__1536x1024__medium__run2.png"/>
+      <div class="cross"><i class="v"></i><i class="h"></i></div>
+    </div>
+    <p class="cap">빨간 십자선 = 정확한 50% 지점.<br>패널 경계가 선에 맞는지 확인</p>
+  </div>
+  <div>
+    <div class="quads"><figure class="q"><img src="gpt-image-2__1536x1024__medium__run2__P1.png"/><figcaption><b>P1</b> 기대: the boy sits at a desk looking confuse…<br>대사: 전자는 공처럼 한 곳에 있는 거 아니야?</figcaption></figure><figure class="q"><img src="gpt-image-2__1536x1024__medium__run2__P2.png"/><figcaption><b>P2</b> 기대: the boy watches a spinning coin blurri…<br>대사: 동전이 돌 때는 앞뒤가 정해져 있지 않네?</figcaption></figure><figure class="q"><img src="gpt-image-2__1536x1024__medium__run2__P3.png"/><figcaption><b>P3</b> 기대: the boy points at a cloud-shaped glow …<br>대사: 전자도 여기 있을 확률로만 알 수 있구나!</figcaption></figure><figure class="q"><img src="gpt-image-2__1536x1024__medium__run2__P4.png"/><figcaption><b>P4</b> 기대: the boy smiles confidently with one fi…<br>대사: 관측하기 전엔 정해지지 않는 게 양자역학이야!</figcaption></figure></div>
+    <p class="cap">자동 4분할 결과.<br>네 명이 같은 인물인지, 대사가 온전한지 확인</p>
+  </div>
+</div>

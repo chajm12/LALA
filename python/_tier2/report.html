@@ -1,0 +1,44 @@
+<!doctype html><meta charset="utf-8"><title>Tier 2</title>
+<style>
+body{font-family:'Noto Sans KR',sans-serif;max-width:1300px;margin:36px auto;padding:0 20px}
+table{border-collapse:collapse;margin:16px 0}
+th,td{border:1px solid #ddd;padding:8px 16px;text-align:center;font-size:14px}
+.grid{display:flex;flex-wrap:wrap;gap:20px}
+.card{width:600px} .card img{width:100%;border:1px solid #ddd;border-radius:8px}
+h3{font-size:14px;margin:0 0 8px}
+ul{list-style:none;padding:0;font-size:12px;line-height:1.7}
+.ok{color:#0a7} .no{color:#d33;font-weight:600}
+</style>
+<h1>Tier 2 — 장면 서술 A/B + 비전 검증</h1>
+<table>
+<tr><th></th><th>전체 패널 통과</th><th>P2(동전) 통과</th></tr>
+<tr><td><b>A 개념형</b></td><td>9/12 (75%)</td><td>0/3 (0%)</td></tr>
+<tr><td><b>B 시각형</b></td><td>12/12 (100%)</td><td>3/3 (100%)</td></tr>
+</table>
+<p style="font-size:13px;color:#666">각 이미지의 판정 결과가 실제와 맞는지 눈으로 대조하십시오.
+비전 판정이 틀리면 검증기를 본선에 쓸 수 없습니다.</p>
+<div class="grid"><div class="card">
+  <h3>A_run1 · 23.2s</h3>
+  <img src="A_run1.png"/>
+  <ul><li class="ok">P1 통과 — Boy is seated at a desk with an open book and has a puzzled/confused expression.</li><li class="no">P2 실패 — The coin is lying flat on the table, not standing upright on its edge (even though it appears motion-blurred).</li><li class="ok">P3 통과 — Boy is pointing at a blurry glowing blue sphere/cloud that has a dot inside.</li><li class="ok">P4 통과 — Boy faces forward smiling with one index finger raised.</li></ul>
+</div><div class="card">
+  <h3>A_run2 · 24.9s</h3>
+  <img src="A_run2.png"/>
+  <ul><li class="ok">P1 통과 — Boy is seated at a desk with an open book and has a puzzled/confused expression (question mark shown).</li><li class="no">P2 실패 — The coin is lying flat on the table, not standing upright on its edge (even though it has some motion blur).</li><li class="ok">P3 통과 — The boy is pointing at a blurry glowing cloud/sphere with a dot inside.</li><li class="ok">P4 통과 — The boy faces forward smiling with one index finger raised.</li></ul>
+</div><div class="card">
+  <h3>A_run3 · 23.1s</h3>
+  <img src="A_run3.png"/>
+  <ul><li class="ok">P1 통과 — Boy is seated at a desk with an open book and has a puzzled/confused expression.</li><li class="no">P2 실패 — The coin appears to be lying flat on the table rather than standing upright on its edge.</li><li class="ok">P3 통과 — Boy is pointing at a blurry glowing blue sphere/cloud that has a dot inside.</li><li class="ok">P4 통과 — Boy faces forward smiling with one index finger raised.</li></ul>
+</div><div class="card">
+  <h3>B_run1 · 23.0s</h3>
+  <img src="B_run1.png"/>
+  <ul><li class="ok">P1 통과 — Boy is seated at a desk with an open book and has a puzzled/confused expression.</li><li class="ok">P2 통과 — Coin is upright on its edge and appears motion-blurred with no readable design/portrait visible.</li><li class="ok">P3 통과 — Boy is pointing at a blurry glowing blue sphere/cloud with a dot inside.</li><li class="ok">P4 통과 — Boy faces forward smiling and holds one index finger raised.</li></ul>
+</div><div class="card">
+  <h3>B_run2 · 22.7s</h3>
+  <img src="B_run2.png"/>
+  <ul><li class="ok">P1 통과 — Boy is seated at a desk with an open book and has a puzzled/confused expression.</li><li class="ok">P2 통과 — Coin is upright on its edge and appears motion-blurred with no readable design on its face.</li><li class="ok">P3 통과 — Boy is pointing toward a blurry glowing blue sphere/cloud with a small dot inside.</li><li class="ok">P4 통과 — Boy faces forward smiling and holds up one index finger.</li></ul>
+</div><div class="card">
+  <h3>B_run3 · 20.5s</h3>
+  <img src="B_run3.png"/>
+  <ul><li class="ok">P1 통과 — Boy is seated at a desk with an open book and has a puzzled/confused expression.</li><li class="ok">P2 통과 — Coin is upright on its edge and the face is motion-blurred with no readable design.</li><li class="ok">P3 통과 — Boy is pointing toward a blurry glowing blue cloud/sphere with a dot inside.</li><li class="ok">P4 통과 — Boy faces forward smiling with one index finger raised.</li></ul>
+</div></div>

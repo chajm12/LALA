@@ -6,6 +6,7 @@ import {
   parseJsonObjectFromText,
 } from "@/lib/openai";
 import { agentLog } from "@/lib/log";
+import { conceptSimilarity, describeSimilarity } from "@/lib/similarity";
 
 type Concept = {
   id: string;
@@ -111,11 +112,42 @@ function normalizeEvaluations(value: unknown, concepts: Concept[]) {
   });
 }
 
+const SIMILARITY_LIMIT = 0.45;   // 이 이상이면 '같은 룩'으로 간주해 배제
+const DIVERSITY_LAMBDA = 60;     // 임계 통과 후보가 없을 때 점수에서 깎는 계수
+
+/**
+ * 1안은 최고점, 2안은 '1안과 충분히 다른 것 중 최고점'을 고른다.
+ * 총점만으로 자르면 평가 기준이 같은 정답을 향하므로 두 안이 닮는다.
+ */
 function selectFallbackFinal(concepts: Concept[], evaluations: Evaluation[]) {
   const scoreById = new Map(evaluations.map((item) => [item.id, item.totalScore]));
-  return [...concepts]
-    .sort((a, b) => (scoreById.get(b.id) ?? 0) - (scoreById.get(a.id) ?? 0))
-    .slice(0, 2);
+  const ranked = [...concepts].sort(
+    (a, b) => (scoreById.get(b.id) ?? 0) - (scoreById.get(a.id) ?? 0),
+  );
+  if (ranked.length < 2) return ranked.slice(0, 2);
+
+  const first = ranked[0];
+  const rest = ranked.slice(1).map((c) => ({
+    concept: c,
+    score: scoreById.get(c.id) ?? 0,
+    sim: conceptSimilarity(first, c),
+  }));
+
+  const distinct = rest.filter((r) => r.sim <= SIMILARITY_LIMIT);
+  const pool = distinct.length ? distinct : rest;
+  const second = [...pool].sort(
+    (a, b) => b.score - DIVERSITY_LAMBDA * b.sim - (a.score - DIVERSITY_LAMBDA * a.sim),
+  )[0];
+
+  agentLog(
+    "evaluate",
+    distinct.length
+      ? `2안 다양성 확보: "${second.concept.name}" (1안과 유사도 ${second.sim} · ${describeSimilarity(second.sim)})`
+      : `⚠ 모든 후보가 1안과 유사(최소 ${Math.min(...rest.map((r) => r.sim))}). ` +
+        `유사도 페널티를 적용해 "${second.concept.name}" 선택`,
+  );
+
+  return [first, second.concept];
 }
 
 function rankEvaluations(evaluations: Evaluation[]) {
@@ -191,8 +223,25 @@ export async function POST(req: Request) {
 - outfitItems에는 실제 착용한 모든 제품을 카테고리와 함께 최대한 구체적으로 넣는다.
 - 예: "모자: 블랙 볼캡", "상의(이너): 화이트 코튼 티셔츠", "상의(아우터): 네이비 세미오버 블레이저", "상의(레이어드): 라이트그레이 니트 베스트", "하의: 차콜 와이드 슬랙스", "신발: 블랙 레더 로퍼", "악세사리: 실버 체인 목걸이".
 - 없는 카테고리는 억지로 만들지 말되, 룩북 이미지에 착용될 아이템은 빠짐없이 포함한다.
-- 후보들은 색상만 다른 수준이 아니라 무드/아이템/핏/소재가 명확히 달라야 한다.
+- 후보 5개는 아래 아키타입을 하나씩 맡는다. 중복 금지.
+  look_01 미니멀/클린   look_02 아메카지·워크웨어   look_03 스포티·애슬레저
+  look_04 클래식·세미포멀   look_05 스트릿·캐주얼
+- 5개 후보의 '상의(아우터)' 카테고리는 서로 달라야 한다.
+  (없는 후보가 있어도 되지만 같은 아이템이 2개 이상 겹치면 안 된다)
+- 5개 후보의 '하의' 실루엣도 서로 달라야 한다. (와이드/스트레이트/테이퍼드/반바지 등)
+- 상황·날씨에 부적합한 아키타입이라면 억지로 맞추지 말고,
+  그 아키타입 안에서 상황에 맞는 변형을 찾아라.
 - 수정 후보(repairedCandidates)는 원 후보와 같은 순서, 같은 id를 반드시 유지한다.
+- 후보 5개는 아래 아키타입을 하나씩 맡는다. 중복 금지.
+  look_01 미니멀/클린   look_02 아메카지·워크웨어   look_03 스포티·애슬레저
+  look_04 클래식·세미포멀   look_05 스트릿·캐주얼
+- 5개 후보의 '상의(아우터)' 카테고리는 서로 달라야 한다.
+- 5개 후보의 '하의' 실루엣도 서로 달라야 한다.
+
+수정 규칙:
+- 각 후보의 아키타입과 핵심 실루엣은 유지한다. 실패 원인만 고친다.
+- 수정 결과가 다른 후보와 비슷해지면 안 된다. 다양성이 우선이다.
+
 
 평가 규칙:
 - 점수 필드명은 weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore, totalScore.
@@ -245,6 +294,9 @@ id, name, weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore,
       `통합 계획 완료: 최종 ${finalConcepts.map((item) => item.name).join(" / ")}`,
     );
 
+    const finalSimilarity =
+      finalConcepts.length === 2 ? conceptSimilarity(finalConcepts[0], finalConcepts[1]) : 0;
+
     return NextResponse.json({
       originalCandidates,
       round1,
@@ -252,6 +304,8 @@ id, name, weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore,
       repairedCandidates: candidateBase,
       round2,
       finalConcepts,
+      finalSimilarity,
+      finalSimilarityLabel: describeSimilarity(finalSimilarity),
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "통합 스타일링 계획 중 알 수 없는 오류";
