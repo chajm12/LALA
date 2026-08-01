@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import CostHistoryChart, { type CostIteration } from "@/components/CostHistoryChart";
+import LoadingScreen, { type LoadingPhase } from "@/components/LoadingScreen";
 
 type Concept = {
   name: string;
@@ -83,6 +84,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [trend, setTrend] = useState<string | null>(null);
   const [variants, setVariants] = useState<Variant[]>([]);
+  const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("hidden");
   const resultsRef = useRef<HTMLElement>(null);
 
   const isRunning = step !== "idle" && step !== "done";
@@ -131,10 +133,11 @@ export default function Home() {
     setError(null);
     setTrend(null);
     setVariants([]);
+    setLoadingPhase("visible");
 
     try {
       setStep("trend");
-      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      resultsRef.current?.scrollIntoView({ behavior: "auto", block: "start" });
       const trendData = await postJson("/api/trend", { keyword });
       setTrend(trendData.trend as string);
 
@@ -166,9 +169,14 @@ export default function Home() {
       await Promise.all(concepts.map((concept, i) => runVariantWork(concept, i)));
 
       setStep("done");
+      await new Promise((r) => setTimeout(r, 500));
+      setLoadingPhase("exiting");
+      await new Promise((r) => setTimeout(r, 700));
+      setLoadingPhase("hidden");
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했어요.");
       setStep("idle");
+      setLoadingPhase("hidden");
     }
   }
 
@@ -182,6 +190,8 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
+      <LoadingScreen phase={loadingPhase} currentStep={step} />
+
       {/* Hero */}
       <section className="relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden bg-black">
         <iframe
