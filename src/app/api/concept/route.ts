@@ -11,7 +11,7 @@ export async function POST(req: Request) {
       {
         role: "system",
         content:
-          "너는 패션 브랜드 기획자야. 주어진 키워드와 트렌드 조사 결과를 바탕으로 패션 컬렉션 컨셉을 JSON으로 기획해줘. 필드: name, description, mood, colorPalette(string[]), targetCustomer.",
+          "너는 패션 브랜드 기획자야. 주어진 키워드와 트렌드 조사 결과를 바탕으로 패션 컬렉션 컨셉을 JSON으로 기획해줘. 필드: name, description, mood, colorPalette(string[]), targetCustomer. name과 colorPalette 값(예: 'Sage Green')을 제외한 모든 텍스트(description, mood, targetCustomer)는 사용자 입력과 같은 언어로 작성해. 사용자 입력이 한국어면 한국어로 작성해.",
       },
       {
         role: "user",
