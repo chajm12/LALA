@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import LoadingScreen, { type LoadingPhase } from "@/components/LoadingScreen";
+import { AGENTKIT_TOOLS, AGENTKIT_TRACE_STEPS } from "@/lib/agentkit";
 
 type Concept = {
   name: string;
@@ -84,14 +85,6 @@ const stepLabels: Record<Step, string> = {
   variants: "룩북 생성 중...",
   done: "완료",
 };
-
-const AGENT_TRACE_STEPS = [
-  { key: "trend", title: "입력 해석", detail: "날짜, 장소, 성별, 키·몸무게, 상황 단서를 분리합니다." },
-  { key: "weather", title: "날씨·계절 판단", detail: "날짜와 장소가 있으면 예보/계절감과 지역 기후를 함께 봅니다." },
-  { key: "concept", title: "후보 생성", detail: "무드, 색감, 핏, 원단/질감을 다르게 둔 5개 후보를 만듭니다." },
-  { key: "evaluate", title: "평가·수정", detail: "날씨, 장소, 체형/핏, 트렌드, 실용성 기준으로 재평가합니다." },
-  { key: "variants", title: "룩북 생성", detail: "최종 2안 이미지를 먼저 만들고 상품 링크는 이후에 붙입니다." },
-] as const;
 
 function formatElapsed(ms: number | null) {
   if (ms === null) return "0.0초";
@@ -212,15 +205,15 @@ async function postJson(url: string, body: unknown) {
 
 function AgentTracePanel({ step }: { step: Step }) {
   const activeIndex =
-    step === "idle" ? -1 : step === "done" ? AGENT_TRACE_STEPS.length : AGENT_TRACE_STEPS.findIndex((item) => item.key === step);
+    step === "idle" ? -1 : step === "done" ? AGENTKIT_TRACE_STEPS.length : AGENTKIT_TRACE_STEPS.findIndex((item) => item.key === step);
 
   return (
     <aside className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
       <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
-        Agent Trace
+        AgentKit Trace
       </p>
       <div className="mt-4 flex flex-col gap-3">
-        {AGENT_TRACE_STEPS.map((item, index) => {
+        {AGENTKIT_TRACE_STEPS.map((item, index) => {
           const isDone = activeIndex > index;
           const isActive = activeIndex === index;
           return (
@@ -246,7 +239,14 @@ function AgentTracePanel({ step }: { step: Step }) {
                 </span>
                 <p className="text-sm font-medium text-black dark:text-zinc-50">{item.title}</p>
               </div>
-              <p className="mt-1 pl-7 text-xs leading-relaxed text-zinc-500 break-keep">{item.detail}</p>
+              <p className="mt-1 pl-7 text-xs leading-relaxed text-zinc-500 break-keep">
+                {item.detail}
+                {item.tool && (
+                  <span className="mt-1 block font-mono text-[10px] uppercase tracking-wide text-zinc-400">
+                    {AGENTKIT_TOOLS[item.tool].label}
+                  </span>
+                )}
+              </p>
             </div>
           );
         })}
@@ -444,7 +444,7 @@ export default function Home() {
     const lookbookPatch: Partial<Variant> = {};
 
     await (async () => {
-      const lookbookData = await postJson("/api/lookbook", { concept });
+      const lookbookData = await postJson(AGENTKIT_TOOLS.lookbook.endpoint, { concept });
       Object.assign(lookbookPatch, {
         imageUrl: (lookbookData.imageUrl as string) ?? null,
         lookbookVerified: Boolean(lookbookData.verified),
@@ -473,7 +473,7 @@ export default function Home() {
     const shoppingPatch: Partial<Variant> = {};
     updateVariant(index, { shoppingLoading: true, shoppingError: null });
 
-    await postJson("/api/shopping", { keyword: runKeyword, concept })
+    await postJson(AGENTKIT_TOOLS.shopping.endpoint, { keyword: runKeyword, concept })
       .then((shoppingData) => {
         const links = asShoppingLinks(shoppingData.links);
         Object.assign(shoppingPatch, {
@@ -530,11 +530,11 @@ export default function Home() {
       window.setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 0);
-      const trendData = await postJson("/api/trend", { keyword: runKeyword });
+      const trendData = await postJson(AGENTKIT_TOOLS.trend.endpoint, { keyword: runKeyword });
       setTrend(trendData.trend as string);
 
       setStep("concept");
-      const evaluationData = normalizeEvaluationProcess(await postJson("/api/plan", {
+      const evaluationData = normalizeEvaluationProcess(await postJson(AGENTKIT_TOOLS.plan.endpoint, {
         keyword: runKeyword,
         trend: trendData.trend,
       }));

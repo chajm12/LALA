@@ -1,6 +1,6 @@
 # DDP PARK SAJANG
 
-날짜, 장소, 상황, 성별, 키, 몸무게를 자연어로 입력하면 트렌드와 날씨를 분석하고, 개인 체형과 상황에 맞는 최종 룩북 2안을 생성하는 퍼스널 스타일링 에이전트입니다.
+날짜, 장소, 상황, 성별, 키, 몸무게를 자연어로 입력하면 트렌드와 날씨를 분석하고, 개인 체형과 상황에 맞는 최종 룩북 2안을 생성하는 AgentKit 기반 퍼스널 스타일링 에이전트입니다.
 
 ## 핵심 기능
 
@@ -14,7 +14,7 @@
 - 재평가 화면에서 1차 평가 대비 순위 상승/하강/유지 표시
 - 최종 룩북 이미지 생성 및 Vision 검증
 - 룩북 결과를 먼저 보여주고, 착용 아이템별 유사 상품 링크는 버튼을 눌렀을 때 검색
-- 이전 검색 기록, 걸린 시간, Agent Trace 패널 제공
+- 이전 검색 기록, 걸린 시간, AgentKit Trace 패널 제공
 
 ## 기술 스택
 
@@ -23,6 +23,7 @@
 - TypeScript
 - Tailwind CSS 4
 - OpenAI API
+- AgentKit-style API tool orchestration
 
 ## OpenAI 모델 설정
 
@@ -69,6 +70,8 @@ http://localhost:3000
 
 ## 파이프라인
 
+현재 시스템은 기존 API 라우트를 유지하면서 `src/lib/agentkit.ts`의 tool manifest로 묶어 AgentKit 스타일로 오케스트레이션합니다. UI는 이 manifest의 endpoint를 호출하고, 오른쪽 패널은 동일한 manifest 기반 trace를 보여줍니다.
+
 1. 트렌드·날씨 분석
    - 사용자의 자연어 입력에서 날짜, 장소, 상황, 성별, 키, 몸무게, 추가 요구사항을 해석합니다.
    - 웹검색을 활용해 장소/상황 무드, 계절감, 트렌드 단서를 분석합니다.
@@ -104,6 +107,17 @@ http://localhost:3000
 - 이미지 2장은 병렬 생성합니다.
 - 추가 속도 개선이 필요하면 Vision 검증/이미지 재생성을 버튼형으로 바꾸거나, 쇼핑 검색을 핵심 아이템 3개만 검색하도록 줄일 수 있습니다.
 
+## AgentKit Tool 구성
+
+```text
+trend    -> /api/trend     # 입력 해석, 날씨·계절, 트렌드 컨텍스트
+plan     -> /api/plan      # 후보 생성, 평가, 수정, 재평가, 최종 2안
+lookbook -> /api/lookbook  # 최종 룩북 이미지 생성 및 Vision 검증
+shopping -> /api/shopping  # 사용자가 요청한 룩의 유사 상품 링크 검색
+```
+
+`/api/agentkit`에서 현재 AgentKit tool manifest와 trace step을 확인할 수 있습니다.
+
 ## 주요 파일
 
 ```text
@@ -111,6 +125,8 @@ src/app/page.tsx              # 메인 UI와 프론트 파이프라인
 src/app/globals.css           # 전체 디자인 스타일
 src/components/LoadingScreen.tsx
 
+src/lib/agentkit.ts           # AgentKit tool manifest와 trace step 정의
+src/app/api/agentkit/route.ts # AgentKit manifest 확인 API
 src/app/api/trend/route.ts    # 트렌드/날씨/장소 분석
 src/app/api/plan/route.ts     # 후보 5개 생성, 평가, 수정, 재평가, 최종 2안 선정
 src/app/api/concept/route.ts  # 이전 후보 생성 라우트
