@@ -166,13 +166,15 @@ export default function Home() {
       setVariants(initialVariants);
 
       setStep("variants");
+      // trend/concept are ready to show now - drop the full-screen loading
+      // screen here instead of waiting for the slow parts (image gen, cost
+      // re-evaluation) so there's always something visible to look at.
+      setLoadingPhase("exiting");
+      setTimeout(() => setLoadingPhase("hidden"), 700);
+
       await Promise.all(concepts.map((concept, i) => runVariantWork(concept, i)));
 
       setStep("done");
-      await new Promise((r) => setTimeout(r, 500));
-      setLoadingPhase("exiting");
-      await new Promise((r) => setTimeout(r, 700));
-      setLoadingPhase("hidden");
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했어요.");
       setStep("idle");
@@ -323,7 +325,7 @@ export default function Home() {
           </section>
         )}
 
-        {variants.some((v) => v.imageUrl || v.lookbookError) && (
+        {variants.length > 0 && (
           <section>
             <h2 className="font-semibold text-black dark:text-zinc-50">3. Lookbook</h2>
             <div className="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -362,7 +364,10 @@ export default function Home() {
                       ✗ 이미지 생성 실패: {v.lookbookError}
                     </p>
                   ) : (
-                    <p className="mt-2 text-sm text-zinc-400">생성 중...</p>
+                    <p className="mt-2 flex items-center gap-2 text-sm text-zinc-400">
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500 dark:border-zinc-700 dark:border-t-zinc-400" />
+                      이미지 생성 중...
+                    </p>
                   )}
                 </div>
               ))}
@@ -370,7 +375,7 @@ export default function Home() {
           </section>
         )}
 
-        {variants.some((v) => v.cost || v.costError) && (
+        {variants.length > 0 && (
           <section>
             <h2 className="font-semibold text-black dark:text-zinc-50">4. Cost — 두 방향 비교</h2>
             <p className="mt-1 text-xs text-zinc-500">
@@ -435,7 +440,10 @@ export default function Home() {
                       ✗ 원가 산출 실패: {v.costError}
                     </p>
                   ) : (
-                    <p className="mt-2 text-sm text-zinc-400">계산 중...</p>
+                    <p className="mt-2 flex items-center gap-2 text-sm text-zinc-400">
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500 dark:border-zinc-700 dark:border-t-zinc-400" />
+                      원가 계산 중... (원단 시세 조사 → 재평가까지 시간이 좀 걸려요)
+                    </p>
                   )}
                 </div>
               ))}
