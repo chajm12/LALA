@@ -15,6 +15,8 @@ type Cost = {
   laborCost: number;
   overheadCost: number;
   totalCost: number;
+  marginRate: number;
+  sellCost: number;
   breakdown: string[];
 };
 
@@ -221,7 +223,13 @@ export default function Home() {
               <li>Labor: {cost.laborCost?.toLocaleString()} KRW</li>
               <li>Overhead: {cost.overheadCost?.toLocaleString()} KRW</li>
               <li className="font-semibold">
-                Total: {cost.totalCost?.toLocaleString()} KRW
+                Production cost: {cost.totalCost?.toLocaleString()} KRW
+              </li>
+              <li className="mt-1 font-semibold text-emerald-600 dark:text-emerald-400">
+                Sell price: {cost.sellCost?.toLocaleString()} KRW{" "}
+                <span className="font-normal text-zinc-500">
+                  (margin {Math.round((cost.marginRate ?? 0) * 100)}%)
+                </span>
               </li>
             </ul>
             <ul className="mt-2 list-disc pl-5 text-sm text-zinc-500">
