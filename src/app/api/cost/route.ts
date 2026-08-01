@@ -3,14 +3,8 @@ import { openai } from "@/lib/openai";
 
 const MIN_MARGIN_RATE = 0.5;
 const MAX_MARGIN_RATE = 0.8;
-const MARGIN_RETRY_THRESHOLD = 0.6;
-const MAX_RETRIES = 1;
-
-type EstimateInput = {
-  concept: Record<string, unknown>;
-  materials: string[];
-  research: string;
-};
+const MARGIN_RETRY_THRESHOLD = 0.65;
+const MAX_RETRIES = 2;
 
 async function researchMarket(concept: Record<string, unknown>, materials: string[]) {
   const response = await openai.responses.create({
@@ -21,7 +15,11 @@ async function researchMarket(concept: Record<string, unknown>, materials: strin
   return response.output_text;
 }
 
-async function estimateCost({ concept, materials, research }: EstimateInput) {
+async function estimateCost(
+  concept: Record<string, unknown>,
+  materials: string[],
+  research: string,
+) {
   const completion = await openai.chat.completions.create({
     model: "gpt-4o",
     response_format: { type: "json_object" },
@@ -41,7 +39,9 @@ async function estimateCost({ concept, materials, research }: EstimateInput) {
   return JSON.parse(completion.choices[0].message.content ?? "{}");
 }
 
-async function findCheaperMaterial(materials: string[], research: string) {
+type MaterialCandidate = { material: string; note: string };
+
+async function compareMaterialAlternatives(primaryMaterial: string, research: string) {
   const completion = await openai.chat.completions.create({
     model: "gpt-4o",
     response_format: { type: "json_object" },
@@ -49,11 +49,11 @@ async function findCheaperMaterial(materials: string[], research: string) {
       {
         role: "system",
         content:
-          "너는 원단 소싱 전문가야. 마진율이 목표치보다 낮아서 더 저렴한 대체 원단이 필요해. 아래 시장 조사 결과를 참고해서, 핵심 기능(방수/보온 등)은 유지하면서 원가가 더 낮은 대체 원단으로 교체한 원단/부자재 목록을 JSON으로 반환해줘. 필드: materials(string[]), reason(string, 왜 이 대체재를 골랐는지 한국어로).",
+          "너는 원단 소싱 전문가야. 마진율이 목표치보다 낮아서 더 저렴한 대체 원단이 필요해. 아래 시장 조사 결과를 참고해서, 핵심 기능(방수/보온 등)은 유지하면서 원가가 더 낮은 대체 원단 후보를 2~3개 제안해줘. JSON으로: candidates(배열, 각 항목: material(string, 영문 소재명), note(string, 원가/장단점 설명, 한국어)), selected(string, candidates 중 최종 추천 원단명 — candidates에 있는 값과 정확히 일치해야 함), reason(string, 왜 이걸 선택했는지 한국어).",
       },
       {
         role: "user",
-        content: `기존 원단/부자재: ${materials.join(", ")}\n\n시장 조사 결과:\n${research}`,
+        content: `기존 원단: ${primaryMaterial}\n\n시장 조사 결과:\n${research}`,
       },
     ],
   });
@@ -61,20 +61,34 @@ async function findCheaperMaterial(materials: string[], research: string) {
   return JSON.parse(completion.choices[0].message.content ?? "{}");
 }
 
+type CostIteration = {
+  iteration: number;
+  materials: string[];
+  materialCost: number;
+  laborCost: number;
+  overheadCost: number;
+  totalCost: number;
+  marginRate: number;
+  sellCost: number;
+  breakdown: string[];
+  reason: string | null;
+  candidates: MaterialCandidate[] | null;
+};
+
 export async function POST(req: Request) {
   const { concept } = await req.json();
-  let materials: string[] = Array.isArray(concept.materials) && concept.materials.length
-    ? concept.materials
-    : [concept.mood ?? "general apparel fabric"];
+  let materials: string[] =
+    Array.isArray(concept.materials) && concept.materials.length
+      ? concept.materials
+      : [concept.mood ?? "general apparel fabric"];
 
-  let materialsUpdated = false;
-  let substitutionReason: string | null = null;
-  let retries = 0;
-  let cost;
+  const history: CostIteration[] = [];
+  let reason: string | null = null;
+  let candidates: MaterialCandidate[] | null = null;
 
-  while (true) {
+  for (let i = 0; i <= MAX_RETRIES; i++) {
     const research = await researchMarket(concept, materials);
-    const raw = await estimateCost({ concept, materials, research });
+    const raw = await estimateCost(concept, materials, research);
 
     const materialCost = Number(raw.materialCost) || 0;
     const laborCost = Number(raw.laborCost) || 0;
@@ -87,7 +101,9 @@ export async function POST(req: Request) {
     );
     const sellCost = Math.round(totalCost / (1 - marginRate));
 
-    cost = {
+    history.push({
+      iteration: i,
+      materials,
       materialCost,
       laborCost,
       overheadCost,
@@ -95,23 +111,37 @@ export async function POST(req: Request) {
       marginRate,
       sellCost,
       breakdown: Array.isArray(raw.breakdown) ? raw.breakdown : [],
-    };
+      reason,
+      candidates,
+    });
 
-    if (marginRate >= MARGIN_RETRY_THRESHOLD || retries >= MAX_RETRIES) break;
+    if (marginRate >= MARGIN_RETRY_THRESHOLD || i === MAX_RETRIES) break;
 
-    const alt = await findCheaperMaterial(materials, research);
-    if (!Array.isArray(alt.materials) || alt.materials.length === 0) break;
+    const alt = await compareMaterialAlternatives(materials[0], research);
+    if (!Array.isArray(alt.candidates) || !alt.candidates.length || !alt.selected) break;
 
-    materials = alt.materials;
-    materialsUpdated = true;
-    substitutionReason = typeof alt.reason === "string" ? alt.reason : null;
-    retries += 1;
+    candidates = alt.candidates;
+    reason = typeof alt.reason === "string" ? alt.reason : null;
+    materials = [alt.selected, ...materials.slice(1)];
   }
+
+  const last = history[history.length - 1];
+  const cost = {
+    materialCost: last.materialCost,
+    laborCost: last.laborCost,
+    overheadCost: last.overheadCost,
+    totalCost: last.totalCost,
+    marginRate: last.marginRate,
+    sellCost: last.sellCost,
+    breakdown: last.breakdown,
+  };
 
   return NextResponse.json({
     cost,
-    materials,
-    materialsUpdated,
-    substitutionReason,
+    materials: last.materials,
+    materialsUpdated: history.length > 1,
+    substitutionReason: last.reason,
+    candidates: last.candidates,
+    history,
   });
 }

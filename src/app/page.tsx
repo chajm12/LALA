@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import CostHistoryChart, { type CostIteration } from "@/components/CostHistoryChart";
 
 type Concept = {
   name: string;
@@ -42,6 +43,11 @@ export default function Home() {
   const [cost, setCost] = useState<Cost | null>(null);
   const [finalMaterials, setFinalMaterials] = useState<string[] | null>(null);
   const [substitutionReason, setSubstitutionReason] = useState<string | null>(null);
+  const [costHistory, setCostHistory] = useState<CostIteration[] | null>(null);
+  const [contradictionIssue, setContradictionIssue] = useState<string | null>(null);
+  const [lookbookVerified, setLookbookVerified] = useState(false);
+  const [lookbookMismatches, setLookbookMismatches] = useState<string[]>([]);
+  const [lookbookRetried, setLookbookRetried] = useState(false);
   const resultsRef = useRef<HTMLElement>(null);
 
   const isRunning = step !== "idle" && step !== "done";
@@ -56,6 +62,11 @@ export default function Home() {
     setCost(null);
     setFinalMaterials(null);
     setSubstitutionReason(null);
+    setCostHistory(null);
+    setContradictionIssue(null);
+    setLookbookVerified(false);
+    setLookbookMismatches([]);
+    setLookbookRetried(false);
 
     try {
       setStep("trend");
@@ -76,6 +87,7 @@ export default function Home() {
       });
       const conceptData = await conceptRes.json();
       setConcept(conceptData.concept);
+      setContradictionIssue(conceptData.contradictionIssue ?? null);
 
       setStep("lookbook");
       const lookbookRes = await fetch("/api/lookbook", {
@@ -85,6 +97,9 @@ export default function Home() {
       });
       const lookbookData = await lookbookRes.json();
       setImageUrl(lookbookData.imageUrl);
+      setLookbookVerified(Boolean(lookbookData.verified));
+      setLookbookMismatches(Array.isArray(lookbookData.mismatches) ? lookbookData.mismatches : []);
+      setLookbookRetried(Boolean(lookbookData.retried));
 
       setStep("cost");
       const costRes = await fetch("/api/cost", {
@@ -96,6 +111,7 @@ export default function Home() {
       setCost(costData.cost);
       setFinalMaterials(costData.materials ?? null);
       setSubstitutionReason(costData.substitutionReason ?? null);
+      setCostHistory(Array.isArray(costData.history) ? costData.history : null);
 
       setStep("done");
     } catch (e) {
@@ -210,6 +226,11 @@ export default function Home() {
             <p className="mt-1 text-sm text-zinc-500">
               Materials: {(finalMaterials ?? concept.materials)?.join(", ")}
             </p>
+            {contradictionIssue && (
+              <p className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                시즌/소재 모순이 감지되어 원단을 자동 수정했어요: {contradictionIssue}
+              </p>
+            )}
             {substitutionReason && (
               <p className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
                 원가 절감을 위해 원단이 자동으로 대체됐어요: {substitutionReason}
@@ -227,6 +248,17 @@ export default function Home() {
               alt="Generated lookbook"
               className="mt-2 w-full rounded-lg"
             />
+            <p
+              className={
+                lookbookVerified
+                  ? "mt-2 text-xs font-medium text-emerald-600 dark:text-emerald-400"
+                  : "mt-2 text-xs font-medium text-amber-600 dark:text-amber-400"
+              }
+            >
+              {lookbookVerified
+                ? `✓ 스펙(색상/소재/무드) 일치 확인됨${lookbookRetried ? " — 1회 재생성 후 통과" : ""}`
+                : `⚠ 일부 스펙 불일치${lookbookRetried ? " (1회 재생성했지만 여전히 남음)" : ""}: ${lookbookMismatches.join(", ")}`}
+            </p>
           </section>
         )}
 
@@ -252,6 +284,12 @@ export default function Home() {
                 <li key={i}>{b}</li>
               ))}
             </ul>
+
+            {costHistory && costHistory.length > 1 && (
+              <div className="mt-4 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+                <CostHistoryChart history={costHistory} />
+              </div>
+            )}
           </section>
         )}
       </main>
