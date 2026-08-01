@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { openai } from "@/lib/openai";
+import { IMAGE_MODEL, openai, VISION_MODEL } from "@/lib/openai";
 import { agentLog } from "@/lib/log";
 
 const MAX_RETRIES = 1;
@@ -7,8 +7,11 @@ const MAX_RETRIES = 1;
 function buildPrompt(concept: Record<string, unknown>, extra?: string) {
   const materials = Array.isArray(concept.materials) ? concept.materials.join(", ") : "";
   const colors = Array.isArray(concept.colorPalette) ? concept.colorPalette.join(", ") : "";
+  const items = Array.isArray(concept.outfitItems) ? concept.outfitItems.join(", ") : "";
   const target = concept.targetCustomer ?? "";
-  return `Fashion lookbook photo of an avatar model wearing an outfit for the concept "${concept.name}". The model's apparent gender, age range, and styling MUST match this target customer profile: "${target}". Mood: ${concept.mood}. Color palette: ${colors}. Materials/fabric: ${materials}. Editorial fashion photography, full body, studio lighting.${extra ? ` ${extra}` : ""}`;
+  const bodyProfile = concept.bodyProfile ?? "";
+  const fitStrategy = concept.fitStrategy ?? "";
+  return `Fashion lookbook photo of a model wearing an outfit for the concept "${concept.name}". The model's apparent gender, height impression, body build, and proportions MUST match this user profile: "${target}". If the user profile does not clearly mention gender, use a male model by default. Body profile from user height and weight: "${bodyProfile}". Outfit items: ${items || concept.description}. Fit and silhouette strategy: ${fitStrategy}. Mood: ${concept.mood}. Color palette: ${colors}. Materials/fabric: ${materials}. Editorial fashion photography, realistic clothing, natural model pose, studio lighting, full body. Show the model from top of head to shoes with comfortable margin above the head and below the shoes. Do not crop the head, hands, legs, feet, or shoes.${extra ? ` ${extra}` : ""}`;
 }
 
 type GenerateResult = { imageUrl: string | null; error: string | null };
@@ -16,7 +19,7 @@ type GenerateResult = { imageUrl: string | null; error: string | null };
 async function generateImage(prompt: string): Promise<GenerateResult> {
   try {
     const image = await openai.images.generate({
-      model: "gpt-image-1",
+      model: IMAGE_MODEL,
       prompt,
       size: "1024x1024",
       n: 1,
@@ -31,7 +34,7 @@ async function generateImage(prompt: string): Promise<GenerateResult> {
 
 async function critiqueImage(imageDataUrl: string, concept: Record<string, unknown>) {
   const completion = await openai.chat.completions.create({
-    model: "gpt-4o",
+    model: VISION_MODEL,
     response_format: { type: "json_object" },
     messages: [
       {
@@ -54,14 +57,14 @@ export async function POST(req: Request) {
   try {
     const { concept } = await req.json();
 
-    agentLog("lookbook", `룩북 이미지 생성 시작 (1차)`, "images.generate · gpt-image-1");
+    agentLog("lookbook", `룩북 이미지 생성 시작 (1차)`, `images.generate · ${IMAGE_MODEL}`);
     let gen = await generateImage(buildPrompt(concept));
 
     if (!gen.imageUrl && gen.error) {
       agentLog(
         "lookbook",
         `✗ 생성 실패: ${gen.error} → 안전한 프롬프트로 1회 재시도`,
-        "images.generate · gpt-image-1",
+        `images.generate · ${IMAGE_MODEL}`,
       );
       gen = await generateImage(
         `${buildPrompt(concept)} Tasteful, fully clothed, professional catalog photography, no suggestive poses or framing.`,
@@ -81,7 +84,7 @@ export async function POST(req: Request) {
       agentLog(
         "lookbook",
         `Vision으로 이미지-스펙 정합성 검증 중...`,
-        "chat.completions (vision) · gpt-4o",
+        `chat.completions (vision) · ${VISION_MODEL}`,
       );
       try {
         const critique = await critiqueImage(imageUrl, concept);
@@ -104,7 +107,7 @@ export async function POST(req: Request) {
       agentLog(
         "lookbook",
         `⚠ 불일치 발견: ${mismatches.join(", ")} → 프롬프트 보강 후 재생성`,
-        "images.generate · gpt-image-1",
+        `images.generate · ${IMAGE_MODEL}`,
       );
       const retry = await generateImage(
         buildPrompt(concept, `Make sure to clearly include: ${mismatches.join("; ")}.`),

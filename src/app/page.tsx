@@ -1,7 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
-import CostHistoryChart, { type CostIteration } from "@/components/CostHistoryChart";
+import { useEffect, useRef, useState } from "react";
 import LoadingScreen, { type LoadingPhase } from "@/components/LoadingScreen";
 
 type Concept = {
@@ -11,16 +10,44 @@ type Concept = {
   colorPalette: string[];
   targetCustomer: string;
   materials: string[];
+  id?: string;
+  outfitItems?: string[];
+  bodyProfile?: string;
+  fitStrategy?: string;
+  stylingReason?: string;
 };
 
-type Cost = {
-  materialCost: number;
-  laborCost: number;
-  overheadCost: number;
-  totalCost: number;
-  marginRate: number;
-  sellCost: number;
-  breakdown: string[];
+type Evaluation = {
+  id: string;
+  name: string;
+  weatherScore: number;
+  placeScore: number;
+  bodyFitScore: number;
+  trendScore: number;
+  practicalityScore: number;
+  totalScore: number;
+  failureReasons: string[];
+  revisionPlan: string[];
+  rank?: number;
+  decisionStatus?: "선택" | "탈락";
+  decisionReason?: string;
+};
+
+type EvaluationProcess = {
+  originalCandidates: Concept[];
+  round1: Evaluation[];
+  repairSummary: string[];
+  repairedCandidates: Concept[];
+  round2: Evaluation[];
+  finalConcepts: Concept[];
+};
+
+type ShoppingLink = {
+  item: string;
+  title: string;
+  url: string;
+  source: string;
+  reason: string;
 };
 
 type Variant = {
@@ -31,25 +58,126 @@ type Variant = {
   lookbookMismatches: string[];
   lookbookRetried: boolean;
   lookbookError: string | null;
-  cost: Cost | null;
   finalMaterials: string[] | null;
-  substitutionReason: string | null;
-  substitutionTier: string | null;
-  costHistory: CostIteration[] | null;
-  costError: string | null;
+  shoppingLinks: ShoppingLink[];
+  shoppingError: string | null;
 };
 
 type Step = "idle" | "trend" | "concept" | "variants" | "done";
 
+type SearchHistoryItem = {
+  id: string;
+  keyword: string;
+  createdAt: string;
+  elapsedMs: number;
+  trend: string | null;
+  variants: Variant[];
+  evaluationProcess: EvaluationProcess | null;
+};
+
 const stepLabels: Record<Step, string> = {
   idle: "생성",
   trend: "트렌드 조사 중...",
-  concept: "컨셉 2안 기획 중...",
-  variants: "룩북·원가 생성 중...",
+  concept: "후보 생성·평가 중...",
+  variants: "룩북·구매 링크 생성 중...",
   done: "완료",
 };
 
-const VARIANT_LABELS = ["A안", "B안"];
+const AGENT_TRACE_STEPS = [
+  { key: "trend", title: "입력 해석", detail: "날짜, 장소, 성별, 키·몸무게, 상황 단서를 분리합니다." },
+  { key: "weather", title: "날씨·계절 판단", detail: "날짜와 장소가 있으면 예보/계절감과 지역 기후를 함께 봅니다." },
+  { key: "concept", title: "후보 생성", detail: "무드, 색감, 핏, 원단/질감을 다르게 둔 5개 후보를 만듭니다." },
+  { key: "evaluate", title: "평가·수정", detail: "날씨, 장소, 체형/핏, 트렌드, 실용성 기준으로 재평가합니다." },
+  { key: "variants", title: "룩북·구매 링크", detail: "최종 2안 이미지를 만들고 비슷한 상품 링크를 찾습니다." },
+] as const;
+
+function formatElapsed(ms: number | null) {
+  if (ms === null) return "0.0초";
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}초`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes}분 ${rest}초`;
+}
+
+function getTimestamp() {
+  return Date.now();
+}
+
+function asConceptArray(value: unknown): Concept[] {
+  return Array.isArray(value) ? (value as Concept[]) : [];
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value];
+  }
+  return [];
+}
+
+function asScore(value: unknown): number {
+  const score = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(score) ? score : 0;
+}
+
+function normalizeEvaluation(value: unknown): Evaluation | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  return {
+    id: String(item.id ?? item.name ?? crypto.randomUUID()),
+    name: String(item.name ?? item.id ?? "이름 없는 후보"),
+    weatherScore: asScore(item.weatherScore),
+    placeScore: asScore(item.placeScore),
+    bodyFitScore: asScore(item.bodyFitScore),
+    trendScore: asScore(item.trendScore),
+    practicalityScore: asScore(item.practicalityScore),
+    totalScore: asScore(item.totalScore),
+    failureReasons: asStringArray(item.failureReasons),
+    revisionPlan: asStringArray(item.revisionPlan),
+    rank: item.rank === undefined ? undefined : asScore(item.rank),
+    decisionStatus: item.decisionStatus === "선택" ? "선택" : item.decisionStatus === "탈락" ? "탈락" : undefined,
+    decisionReason: typeof item.decisionReason === "string" ? item.decisionReason : undefined,
+  };
+}
+
+function asEvaluationArray(value: unknown): Evaluation[] {
+  return Array.isArray(value)
+    ? value.map(normalizeEvaluation).filter((item): item is Evaluation => item !== null)
+    : [];
+}
+
+function asShoppingLinks(value: unknown): ShoppingLink[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const link = item as Record<string, unknown>;
+      const url = typeof link.url === "string" ? link.url : "";
+      if (!/^https?:\/\//.test(url)) return null;
+      return {
+        item: String(link.item ?? "추천 아이템"),
+        title: String(link.title ?? "비슷한 상품"),
+        url,
+        source: String(link.source ?? "쇼핑몰"),
+        reason: String(link.reason ?? "최종 착장과 유사한 아이템이에요."),
+      };
+    })
+    .filter((item): item is ShoppingLink => item !== null);
+}
+
+function normalizeEvaluationProcess(value: Record<string, unknown>): EvaluationProcess {
+  return {
+    originalCandidates: asConceptArray(value.originalCandidates),
+    round1: asEvaluationArray(value.round1),
+    repairSummary: Array.isArray(value.repairSummary) ? (value.repairSummary as string[]) : [],
+    repairedCandidates: asConceptArray(value.repairedCandidates),
+    round2: asEvaluationArray(value.round2),
+    finalConcepts: asConceptArray(value.finalConcepts),
+  };
+}
 
 async function postJson(url: string, body: unknown) {
   const res = await fetch(url, {
@@ -78,25 +206,191 @@ async function postJson(url: string, body: unknown) {
   return data;
 }
 
+function AgentTracePanel({ step }: { step: Step }) {
+  const activeIndex =
+    step === "idle" ? -1 : step === "done" ? AGENT_TRACE_STEPS.length : AGENT_TRACE_STEPS.findIndex((item) => item.key === step);
+
+  return (
+    <aside className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+      <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
+        Agent Trace
+      </p>
+      <div className="mt-4 flex flex-col gap-3">
+        {AGENT_TRACE_STEPS.map((item, index) => {
+          const isDone = activeIndex > index;
+          const isActive = activeIndex === index;
+          return (
+            <div
+              key={item.key}
+              className={
+                isActive
+                  ? "rounded-md border border-violet-200 bg-violet-50 p-3 dark:border-violet-900 dark:bg-violet-950/50"
+                  : "rounded-md bg-zinc-50 p-3 dark:bg-zinc-900"
+              }
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={
+                    isDone
+                      ? "flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[11px] text-white"
+                      : isActive
+                      ? "h-5 w-5 animate-pulse rounded-full border-2 border-violet-500"
+                      : "h-5 w-5 rounded-full border border-zinc-300 dark:border-zinc-700"
+                  }
+                >
+                  {isDone ? "✓" : ""}
+                </span>
+                <p className="text-sm font-medium text-black dark:text-zinc-50">{item.title}</p>
+              </div>
+              <p className="mt-1 pl-7 text-xs leading-relaxed text-zinc-500 break-keep">{item.detail}</p>
+            </div>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
+function EvaluationList({
+  title,
+  evaluations,
+  hideSelectedDetails = false,
+}: {
+  title: string;
+  evaluations: Evaluation[];
+  hideSelectedDetails?: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+      <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
+        {title}
+      </p>
+      <div className="mt-2 flex flex-col gap-3">
+        {evaluations.map((evaluation) => (
+          <div key={`${title}-${evaluation.id}`} className="rounded-md bg-zinc-50 p-3 dark:bg-zinc-900">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium text-black dark:text-zinc-50">
+                    {evaluation.rank ? `${evaluation.rank}위 · ` : ""}
+                    {evaluation.name}
+                  </p>
+                  {evaluation.decisionStatus && (
+                    <span
+                      className={
+                        evaluation.decisionStatus === "선택"
+                          ? "rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                          : "rounded-full bg-zinc-200 px-2 py-0.5 text-[11px] font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                      }
+                    >
+                      {evaluation.decisionStatus}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-zinc-500">
+                  날씨 {evaluation.weatherScore} · 장소 {evaluation.placeScore} · 체형/핏 {evaluation.bodyFitScore} · 트렌드 {evaluation.trendScore} · 실용 {evaluation.practicalityScore}
+                </p>
+              </div>
+              <span className="rounded-full bg-violet-100 px-2 py-1 text-xs font-semibold text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+                총점 {evaluation.totalScore}
+              </span>
+            </div>
+            <div className="mt-2 grid gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+              {evaluation.decisionReason && (
+                <p>
+                  <span className="font-semibold text-zinc-800 dark:text-zinc-100">선택 판단: </span>
+                  {evaluation.decisionReason}
+                </p>
+              )}
+              {!(hideSelectedDetails && evaluation.decisionStatus === "선택") && (
+                <>
+                  <p>
+                    <span className="font-semibold text-zinc-800 dark:text-zinc-100">실패 원인: </span>
+                    {evaluation.failureReasons?.join(", ") || "큰 실패 요인 없음"}
+                  </p>
+                  <p>
+                    <span className="font-semibold text-zinc-800 dark:text-zinc-100">수정 방향: </span>
+                    {evaluation.revisionPlan?.join(", ") || "유지"}
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [keyword, setKeyword] = useState("");
   const [step, setStep] = useState<Step>("idle");
   const [error, setError] = useState<string | null>(null);
   const [trend, setTrend] = useState<string | null>(null);
   const [variants, setVariants] = useState<Variant[]>([]);
+  const [evaluationProcess, setEvaluationProcess] = useState<EvaluationProcess | null>(null);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("hidden");
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  const [history, setHistory] = useState<SearchHistoryItem[]>([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const resultsRef = useRef<HTMLElement>(null);
 
   const isRunning = step !== "idle" && step !== "done";
+
+  useEffect(() => {
+    if (!isRunning || startedAt === null) return;
+    const interval = window.setInterval(() => {
+      setElapsedMs(Date.now() - startedAt);
+    }, 100);
+    return () => window.clearInterval(interval);
+  }, [isRunning, startedAt]);
 
   function updateVariant(index: number, patch: Partial<Variant>) {
     setVariants((prev) => prev.map((v, i) => (i === index ? { ...v, ...patch } : v)));
   }
 
-  async function runVariantWork(concept: Concept, index: number) {
-    try {
+  function saveHistory(item: SearchHistoryItem) {
+    setHistory((prev) => [item, ...prev.filter((historyItem) => historyItem.id !== item.id)].slice(0, 5));
+  }
+
+  function resetForNewSearch() {
+    setKeyword("");
+    setError(null);
+    setTrend(null);
+    setVariants([]);
+    setEvaluationProcess(null);
+    setStep("idle");
+    setStartedAt(null);
+    setElapsedMs(null);
+    setLoadingPhase("hidden");
+    setIsHistoryOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function restoreHistory(item: SearchHistoryItem) {
+    setKeyword(item.keyword);
+    setTrend(item.trend);
+    setVariants(item.variants);
+    setEvaluationProcess(item.evaluationProcess);
+    setElapsedMs(item.elapsedMs);
+    setStartedAt(null);
+    setError(null);
+    setStep("done");
+    setLoadingPhase("hidden");
+    setIsHistoryOpen(false);
+    window.setTimeout(() => {
+      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }
+
+  async function runVariantWork(concept: Concept, index: number): Promise<Partial<Variant>> {
+    const lookbookPatch: Partial<Variant> = {};
+    const shoppingPatch: Partial<Variant> = {};
+
+    const lookbookPromise = (async () => {
       const lookbookData = await postJson("/api/lookbook", { concept });
-      updateVariant(index, {
+      Object.assign(lookbookPatch, {
         imageUrl: (lookbookData.imageUrl as string) ?? null,
         lookbookVerified: Boolean(lookbookData.verified),
         lookbookMismatches: Array.isArray(lookbookData.mismatches)
@@ -105,96 +399,115 @@ export default function Home() {
         lookbookRetried: Boolean(lookbookData.retried),
         lookbookError: (lookbookData.error as string) ?? null,
       });
-    } catch (e) {
-      updateVariant(index, {
+      updateVariant(index, lookbookPatch);
+    })().catch((e) => {
+      Object.assign(lookbookPatch, {
         lookbookError: e instanceof Error ? e.message : "룩북 이미지 생성 실패",
       });
-    }
+      updateVariant(index, lookbookPatch);
+    });
 
-    try {
-      const costData = await postJson("/api/cost", { concept });
-      updateVariant(index, {
-        cost: costData.cost as Cost,
-        finalMaterials: (costData.materials as string[]) ?? null,
-        substitutionReason: (costData.substitutionReason as string) ?? null,
-        substitutionTier: (costData.substitutionTier as string) ?? null,
-        costHistory: Array.isArray(costData.history) ? (costData.history as CostIteration[]) : null,
+    const shoppingPromise = postJson("/api/shopping", { keyword, concept })
+      .then((shoppingData) => {
+        const links = asShoppingLinks(shoppingData.links);
+        Object.assign(shoppingPatch, {
+          shoppingLinks: links,
+          shoppingError: links.length
+            ? null
+            : "조건에 맞는 직접 상품 상세 링크를 찾지 못했어요.",
+        });
+        updateVariant(index, shoppingPatch);
+      })
+      .catch((e) => {
+        Object.assign(shoppingPatch, {
+          shoppingError: e instanceof Error ? e.message : "구매 링크 검색 실패",
+        });
+        updateVariant(index, shoppingPatch);
       });
-    } catch (e) {
-      updateVariant(index, {
-        costError: e instanceof Error ? e.message : "원가 산출 실패",
-      });
-    }
+
+    await Promise.all([lookbookPromise, shoppingPromise]);
+    return { ...lookbookPatch, ...shoppingPatch };
   }
 
   async function runPipeline() {
     if (!keyword.trim()) return;
+    const runKeyword = keyword.trim();
+    const runStartedAt = getTimestamp();
 
     setError(null);
     setTrend(null);
     setVariants([]);
-    setLoadingPhase("visible");
+    setEvaluationProcess(null);
+    setLoadingPhase("hidden");
+    setStartedAt(runStartedAt);
+    setElapsedMs(0);
+    setIsHistoryOpen(false);
 
     try {
       setStep("trend");
-      const trendData = await postJson("/api/trend", { keyword });
+      window.setTimeout(() => {
+        resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+      const trendData = await postJson("/api/trend", { keyword: runKeyword });
       setTrend(trendData.trend as string);
 
       setStep("concept");
-      const conceptData = await postJson("/api/concept", { keyword, trend: trendData.trend });
-      const concepts = conceptData.concepts as Concept[];
-      const contradictionIssues = Array.isArray(conceptData.contradictionIssues)
-        ? (conceptData.contradictionIssues as (string | null)[])
-        : [];
+      const conceptData = await postJson("/api/concept", { keyword: runKeyword, trend: trendData.trend });
+      const candidatePool = asConceptArray(conceptData.concepts);
+      const evaluationData = normalizeEvaluationProcess(await postJson("/api/evaluate", {
+        keyword: runKeyword,
+        trend: trendData.trend,
+        candidates: candidatePool,
+      }));
+      setEvaluationProcess(evaluationData);
+      const concepts = evaluationData.finalConcepts.length
+        ? evaluationData.finalConcepts
+        : candidatePool.slice(0, 2);
 
-      const initialVariants: Variant[] = concepts.map((concept, i) => ({
+      const initialVariants: Variant[] = concepts.map((concept) => ({
         concept,
-        contradictionIssue: contradictionIssues[i] ?? null,
+        contradictionIssue: null,
         imageUrl: null,
         lookbookVerified: false,
         lookbookMismatches: [],
         lookbookRetried: false,
         lookbookError: null,
-        cost: null,
         finalMaterials: null,
-        substitutionReason: null,
-        substitutionTier: null,
-        costHistory: null,
-        costError: null,
+        shoppingLinks: [],
+        shoppingError: null,
       }));
       setVariants(initialVariants);
 
       setStep("variants");
-      // trend/concept are ready to show now - drop the full-screen loading
-      // screen here instead of waiting for the slow parts (image gen, cost
-      // re-evaluation) so there's always something visible to look at.
-      // Stays in "exiting" (slid up, off-screen) permanently afterward - no
-      // reset to "hidden", since that reset was itself a transform change
-      // and (with the transition class always on) animated back down
-      // through the viewport, looking like an up-then-down bounce.
-      setLoadingPhase("exiting");
-      // Scroll now (not earlier) so the page visibly scrolls down to Trend
-      // in sync with the loading screen sliding up, instead of having
-      // already jumped there silently behind the overlay.
-      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
 
-      await Promise.all(concepts.map((concept, i) => runVariantWork(concept, i)));
+      const variantPatches = await Promise.all(concepts.map((concept, i) => runVariantWork(concept, i)));
+      const finalVariants = initialVariants.map((variant, index) => ({
+        ...variant,
+        ...variantPatches[index],
+      }));
+      setVariants(finalVariants);
 
+      const finishedElapsedMs = getTimestamp() - runStartedAt;
+      setElapsedMs(finishedElapsedMs);
+      setStartedAt(null);
       setStep("done");
+      saveHistory({
+        id: `${runStartedAt}`,
+        keyword: runKeyword,
+        createdAt: new Date(runStartedAt).toLocaleString("ko-KR", { hour12: false }),
+        elapsedMs: finishedElapsedMs,
+        trend: trendData.trend as string,
+        variants: finalVariants,
+        evaluationProcess: evaluationData,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했어요.");
       setStep("idle");
-      setLoadingPhase("exiting");
+      setStartedAt(null);
+      setElapsedMs(getTimestamp() - runStartedAt);
+      setLoadingPhase("hidden");
     }
   }
-
-  const bothCostsReady = variants.length === 2 && variants.every((v) => v.cost);
-  const cheaperIndex =
-    bothCostsReady && variants[0].cost!.sellCost !== variants[1].cost!.sellCost
-      ? variants[0].cost!.sellCost < variants[1].cost!.sellCost
-        ? 0
-        : 1
-      : null;
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
@@ -218,32 +531,63 @@ export default function Home() {
             Fashion Planning Agent
           </h1>
           <p className="max-w-md text-sm text-violet-100 sm:text-base">
-            한 줄의 아이디어만으로 트렌드 조사부터 룩북, 원가 초안까지 몇 분 만에
+           
           </p>
         </div>
 
-        <div className="relative mt-10 flex w-full max-w-xl gap-2 px-6">
-          <input
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            placeholder="예: Y2K 스트릿 감성의 서머 캡슐 컬렉션"
-            className="flex-1 rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-white placeholder-white/50 backdrop-blur-md focus:border-white/40 focus:outline-none"
-            disabled={isRunning}
-          />
-          <button
-            onClick={runPipeline}
-            disabled={isRunning || !keyword.trim()}
-            className={
-              isRunning
-                ? "flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-white/15 px-5 py-3 font-medium text-white"
-                : "rounded-lg bg-white px-5 py-3 font-medium text-black disabled:opacity-40"
-            }
-          >
-            {isRunning && (
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+        <div className="relative mt-10 w-full max-w-xl px-6">
+          <div className="flex gap-2">
+            <input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="예: 8월 10일 성수동 카페 데이트, 175cm 70kg"
+              className="flex-1 rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-white placeholder-white/50 backdrop-blur-md focus:border-white/40 focus:outline-none"
+              disabled={isRunning}
+            />
+            <button
+              onClick={runPipeline}
+              disabled={isRunning || !keyword.trim()}
+              className={
+                isRunning
+                  ? "flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-white/15 px-5 py-3 font-medium text-white"
+                  : "rounded-lg bg-white px-5 py-3 font-medium text-black disabled:opacity-40"
+              }
+            >
+              {isRunning && (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+              )}
+              {isRunning ? stepLabels[step] : "생성"}
+            </button>
+          </div>
+
+          <div className="relative mt-2 flex justify-start">
+            <button
+              type="button"
+              onClick={() => setIsHistoryOpen((prev) => !prev)}
+              disabled={history.length === 0}
+              className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-medium text-white/80 backdrop-blur-md transition hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              이전 기록 {history.length > 0 ? history.length : ""}
+            </button>
+
+            {isHistoryOpen && (
+              <div className="absolute left-0 top-10 z-20 w-full max-w-md overflow-hidden rounded-lg border border-white/15 bg-black/80 p-2 text-left shadow-2xl backdrop-blur-xl">
+                {history.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => restoreHistory(item)}
+                    className="block w-full rounded-md px-3 py-2 text-left transition hover:bg-white/10"
+                  >
+                    <span className="block truncate text-sm font-medium text-white">{item.keyword}</span>
+                    <span className="mt-0.5 block text-xs text-white/50">
+                      {item.createdAt} · {formatElapsed(item.elapsedMs)}
+                    </span>
+                  </button>
+                ))}
+              </div>
             )}
-            {isRunning ? stepLabels[step] : "생성"}
-          </button>
+          </div>
         </div>
 
         {error && (
@@ -254,8 +598,25 @@ export default function Home() {
       {/* Pipeline results */}
       <main
         ref={resultsRef}
-        className="mx-auto flex min-h-screen max-w-4xl scroll-mt-6 flex-col gap-8 px-6 py-16"
+        className="mx-auto flex min-h-screen max-w-7xl scroll-mt-6 flex-col gap-8 px-6 py-16"
       >
+        {step !== "idle" && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="text-sm text-zinc-600 dark:text-zinc-300">
+              <span className="font-semibold text-black dark:text-zinc-50">걸린 시간</span>{" "}
+              {formatElapsed(elapsedMs)}
+              {isRunning && <span className="ml-2 text-xs text-violet-500">진행 중</span>}
+            </div>
+            <button
+              type="button"
+              onClick={resetForNewSearch}
+              className="rounded-md bg-black px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+            >
+              재검색
+            </button>
+          </div>
+        )}
+
         {step !== "idle" && (
           <ol className="flex gap-4 text-sm text-zinc-500">
             {(["trend", "concept", "variants"] as Step[]).map((s) => (
@@ -272,80 +633,77 @@ export default function Home() {
                 {step === s && (
                   <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-black dark:border-zinc-600 dark:border-t-white" />
                 )}
-                {s === "variants" ? "룩북·원가" : s}
+                {s === "variants" ? "룩북·구매 링크" : s === "concept" ? "후보 평가" : s}
               </li>
             ))}
           </ol>
         )}
 
-        {trend && (
-          <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-            <h2 className="font-semibold text-black dark:text-zinc-50">1. Trend</h2>
-            <p className="mt-2 whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">
-              {trend}
-            </p>
+        {(trend || step !== "idle") && (
+          <section className="grid items-stretch grid-cols-1 gap-4 lg:grid-cols-[3fr_1fr]">
+            <div className="flex h-full min-h-0 flex-col rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+              <h2 className="font-semibold text-black dark:text-zinc-50">1. 트렌드·날씨 분석</h2>
+              <p className="mt-1 text-sm text-zinc-500">
+                분석 내용은 이 박스 안에서 스크롤해 확인할 수 있어요.
+              </p>
+              {trend ? (
+                <div className="mt-3 max-h-96 overflow-y-auto rounded-md bg-zinc-50 p-3 text-sm text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
+                  <p className="whitespace-pre-wrap break-keep leading-relaxed">{trend}</p>
+                </div>
+              ) : (
+                <p className="mt-2 flex items-center gap-2 text-sm text-zinc-400">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500 dark:border-zinc-700 dark:border-t-zinc-400" />
+                  입력을 해석하고 날짜·장소·날씨 단서를 분석 중...
+                </p>
+              )}
+            </div>
+            <AgentTracePanel step={step} />
           </section>
         )}
 
-        {variants.length > 0 && (
+        {evaluationProcess && (
           <section>
-            <h2 className="font-semibold text-black dark:text-zinc-50">2. Concept — 두 가지 방향</h2>
-            <div className="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {variants.map((v, i) => (
-                <div
-                  key={i}
-                  className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
-                >
-                  <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
-                    {VARIANT_LABELS[i]}
-                  </p>
-                  <p className="mt-1 font-medium text-black dark:text-zinc-50">{v.concept.name}</p>
-                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">{v.concept.description}</p>
-                  <p className="mt-1 text-sm text-zinc-500">Mood: {v.concept.mood}</p>
-                  <p className="mt-1 text-sm text-zinc-500">Colors: {v.concept.colorPalette?.join(", ")}</p>
-                  <p className="mt-1 text-sm text-zinc-500">Target: {v.concept.targetCustomer}</p>
-                  <p className="mt-1 text-sm text-zinc-500">
-                    Materials: {(v.finalMaterials ?? v.concept.materials)?.join(", ")}
-                  </p>
-                  {v.contradictionIssue && (
-                    <div className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                      <p className="font-semibold">💡 왜 원단이 바뀌었나요?</p>
-                      <p className="mt-0.5">
-                        계절/트렌드와 원단이 안 맞아서 자동으로 고쳤어요: {v.contradictionIssue}
-                      </p>
-                    </div>
-                  )}
-                  {v.substitutionReason && (
-                    <div className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                      <p className="font-semibold">
-                        💡 왜 원단이 바뀌었나요?{v.substitutionTier ? ` (${v.substitutionTier}에서 탐색)` : ""}
-                      </p>
-                      <p className="mt-0.5">
-                        원가 절감을 위해 원단을 자동으로 대체했어요: {v.substitutionReason}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ))}
+            <h2 className="font-semibold text-black dark:text-zinc-50">2. 후보 평가·수정·재평가</h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              룩북 이미지는 최종 2안만 생성하고, 아래에는 전체 후보의 평가 과정만 보여줍니다.
+            </p>
+
+            <div className="mt-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+              <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
+                후보 {evaluationProcess.originalCandidates.length}개 생성
+              </p>
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {evaluationProcess.originalCandidates.map((candidate) => (
+                  <div key={candidate.id ?? candidate.name} className="rounded-md bg-zinc-50 p-2 text-sm dark:bg-zinc-900">
+                    <p className="font-medium text-black dark:text-zinc-50">{candidate.name}</p>
+                    <p className="text-xs text-zinc-500">{candidate.mood}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <EvaluationList title="1차 평가" evaluations={evaluationProcess.round1} />
+              <EvaluationList title="재평가" evaluations={evaluationProcess.round2} hideSelectedDetails />
             </div>
           </section>
         )}
 
         {variants.length > 0 && (
           <section>
-            <h2 className="font-semibold text-black dark:text-zinc-50">3. Lookbook</h2>
+            <h2 className="font-semibold text-black dark:text-zinc-50">3. 최종 룩북 2안</h2>
             <div className="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {variants.map((v, i) => (
-                <div key={i} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
-                    {VARIANT_LABELS[i]}
-                  </p>
+              {variants.map((v) => (
+                <div key={v.concept.id ?? v.concept.name} className="min-w-0 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                  <h3 className="break-keep text-lg font-semibold text-black dark:text-zinc-50">
+                    {v.concept.name}
+                  </h3>
                   {v.imageUrl ? (
                     <>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={v.imageUrl}
-                        alt={`${VARIANT_LABELS[i]} lookbook`}
+                        alt={`${v.concept.name} 룩북`}
                         className="mt-2 w-full rounded-lg"
                       />
                       <div
@@ -375,88 +733,69 @@ export default function Home() {
                       이미지 생성 중...
                     </p>
                   )}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
 
-        {variants.length > 0 && (
-          <section>
-            <h2 className="font-semibold text-black dark:text-zinc-50">4. Cost — 두 방향 비교</h2>
-            <p className="mt-1 text-xs text-zinc-500">
-              ⚠️ 아래 수치는 웹검색 기반 AI 추정치예요. 실제 발주 전에는 반드시 원단 시세를 별도로 확인하세요.
-            </p>
-
-            {bothCostsReady && cheaperIndex !== null && (
-              <p className="mt-2 rounded-md bg-violet-50 p-2 text-sm font-medium text-violet-800 dark:bg-violet-950 dark:text-violet-300">
-                💰 {VARIANT_LABELS[cheaperIndex]}이 판매가 기준으로 더 저렴해요 (
-                {Math.abs(
-                  Math.round(
-                    ((variants[cheaperIndex].cost!.sellCost -
-                      variants[cheaperIndex === 0 ? 1 : 0].cost!.sellCost) /
-                      variants[cheaperIndex === 0 ? 1 : 0].cost!.sellCost) *
-                      100,
-                  ),
-                )}
-                % 낮음)
-              </p>
-            )}
-
-            <div className="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {variants.map((v, i) => (
-                <div key={i} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
-                    {VARIANT_LABELS[i]}
-                  </p>
-                  {v.cost ? (
-                    <>
-                      <ul className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
-                        <li>Material: {v.cost.materialCost?.toLocaleString()} KRW</li>
-                        <li>Labor: {v.cost.laborCost?.toLocaleString()} KRW</li>
-                        <li>Overhead: {v.cost.overheadCost?.toLocaleString()} KRW</li>
-                        <li className="font-semibold">
-                          Production cost (추정): {v.cost.totalCost?.toLocaleString()} KRW
-                        </li>
-                        <li className="mt-1 font-semibold text-emerald-600 dark:text-emerald-400">
-                          Sell price (추정): {v.cost.sellCost?.toLocaleString()} KRW{" "}
-                          <span className="font-normal text-zinc-500">
-                            (margin {Math.round((v.cost.marginRate ?? 0) * 100)}%)
-                          </span>
-                        </li>
-                      </ul>
-
-                      <p className="mt-3 text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                        💡 이렇게 계산했어요
-                      </p>
-                      <ul className="mt-1 list-disc pl-5 text-sm text-zinc-500">
-                        {v.cost.breakdown?.map((b, bi) => (
-                          <li key={bi}>{b}</li>
+                  <div className="mt-4 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
+                      비슷한 옷 구매 링크
+                    </p>
+                    {v.shoppingLinks.length > 0 ? (
+                      <div className="mt-2 flex flex-col gap-2">
+                        {v.shoppingLinks.map((link, linkIndex) => (
+                          <a
+                            key={`${link.url}-${linkIndex}`}
+                            href={link.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="min-w-0 overflow-hidden rounded-md bg-zinc-50 p-3 text-sm transition hover:bg-zinc-100 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+                          >
+                            <span className="block break-words text-xs font-semibold text-violet-600 dark:text-violet-400">
+                              {link.item} · {link.source}
+                            </span>
+                            <span className="mt-1 block break-words font-medium leading-snug text-black dark:text-zinc-50">
+                              {link.title}
+                            </span>
+                            <span className="mt-1 block break-keep text-xs leading-relaxed text-zinc-500">{link.reason}</span>
+                          </a>
                         ))}
-                      </ul>
+                      </div>
+                    ) : v.shoppingError ? (
+                      <p className="mt-2 rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+                        ✗ 구매 링크 검색 실패: {v.shoppingError}
+                      </p>
+                    ) : (
+                      <p className="mt-2 flex items-center gap-2 text-sm text-zinc-400">
+                        <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500 dark:border-zinc-700 dark:border-t-zinc-400" />
+                        비슷한 상품 검색 중...
+                      </p>
+                    )}
+                  </div>
 
-                      {v.costHistory && v.costHistory.length > 1 && (
-                        <div className="mt-4 border-t border-zinc-200 pt-4 dark:border-zinc-800">
-                          <CostHistoryChart history={v.costHistory} />
-                        </div>
+                  <div className="mt-4 border-t border-zinc-200 pt-3 text-sm dark:border-zinc-800">
+                    <p className="break-keep text-zinc-700 dark:text-zinc-300">{v.concept.description}</p>
+                    <div className="mt-3 grid gap-1 text-xs text-zinc-500">
+                      <p className="break-words">무드: {v.concept.mood}</p>
+                      <p className="break-words">색감: {v.concept.colorPalette?.join(", ")}</p>
+                      <p className="break-words">대상: {v.concept.targetCustomer}</p>
+                      {v.concept.bodyProfile && <p className="break-words">체형 반영: {v.concept.bodyProfile}</p>}
+                      {v.concept.fitStrategy && <p className="break-words">핏 전략: {v.concept.fitStrategy}</p>}
+                      {Array.isArray(v.concept.outfitItems) && (
+                        <p className="break-words">아이템: {v.concept.outfitItems.join(", ")}</p>
                       )}
-                    </>
-                  ) : v.costError ? (
-                    <p className="mt-2 rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
-                      ✗ 원가 산출 실패: {v.costError}
-                    </p>
-                  ) : (
-                    <p className="mt-2 flex items-center gap-2 text-sm text-zinc-400">
-                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500 dark:border-zinc-700 dark:border-t-zinc-400" />
-                      원가 계산 중... (원단 시세 조사 → 재평가까지 시간이 좀 걸려요)
-                    </p>
-                  )}
+                      <p className="break-words">원단/질감: {(v.finalMaterials ?? v.concept.materials)?.join(", ")}</p>
+                    </div>
+                    {v.concept.stylingReason && (
+                      <p className="mt-3 break-keep text-sm text-zinc-700 dark:text-zinc-300">
+                        {v.concept.stylingReason}
+                      </p>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           </section>
         )}
       </main>
+
     </div>
   );
 }

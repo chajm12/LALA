@@ -6,9 +6,9 @@ const STEPS = ["trend", "concept", "variants"] as const;
 type StepKey = (typeof STEPS)[number];
 
 const STEP_TITLES: Record<StepKey, string> = {
-  trend: "트렌드 조사 중",
-  concept: "컨셉 2안 기획 중",
-  variants: "룩북·원가 생성 중",
+  trend: "트렌드·날씨 조사 중",
+  concept: "후보 생성·평가 중",
+  variants: "룩북·구매 링크 생성 중",
 };
 
 export default function LoadingScreen({
@@ -41,7 +41,7 @@ export default function LoadingScreen({
 
       <p className="mt-6 text-lg font-medium text-white">{title}</p>
       <p className="mt-1 text-sm text-white/50">
-        {currentStep === "done" ? "결과를 보여드릴게요" : "에이전트가 초안을 만들고 있어요"}
+        {currentStep === "done" ? "결과를 보여드릴게요" : "에이전트가 후보를 만들고 검증하고 있어요"}
       </p>
 
       <ol className="mt-10 flex items-center gap-3 text-sm">

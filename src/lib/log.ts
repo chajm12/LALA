@@ -2,7 +2,8 @@ const COLORS = {
   trend: "\x1b[36m", // cyan
   concept: "\x1b[35m", // magenta
   lookbook: "\x1b[33m", // yellow
-  cost: "\x1b[32m", // green
+  evaluate: "\x1b[34m", // blue
+  shopping: "\x1b[32m", // green
 } as const;
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
