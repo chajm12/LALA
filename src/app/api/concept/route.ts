@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { openai } from "@/lib/openai";
+import { agentLog } from "@/lib/log";
 
 async function checkContradiction(concept: Record<string, unknown>) {
   const completion = await openai.chat.completions.create({
@@ -24,6 +25,8 @@ async function checkContradiction(concept: Record<string, unknown>) {
 export async function POST(req: Request) {
   const { keyword, trend } = await req.json();
 
+  agentLog("concept", `"${keyword}" 기반 컨셉 기획 시작`);
+
   const completion = await openai.chat.completions.create({
     model: "gpt-4o",
     response_format: { type: "json_object" },
@@ -41,16 +44,27 @@ export async function POST(req: Request) {
   });
 
   const concept = JSON.parse(completion.choices[0].message.content ?? "{}");
+  agentLog(
+    "concept",
+    `컨셉 생성 완료: "${concept.name}" / 원단: ${(concept.materials ?? []).join(", ")}`,
+  );
 
   let contradictionIssue: string | null = null;
+  agentLog("concept", `시즌/소재 모순 체크 중...`);
   try {
     const check = await checkContradiction(concept);
     if (check.hasContradiction && Array.isArray(check.fixedMaterials) && check.fixedMaterials.length) {
       concept.materials = check.fixedMaterials;
       contradictionIssue = typeof check.issue === "string" ? check.issue : null;
+      agentLog(
+        "concept",
+        `⚠ 모순 발견: ${contradictionIssue} → 원단 자동 수정: ${concept.materials.join(", ")}`,
+      );
+    } else {
+      agentLog("concept", `✓ 모순 없음`);
     }
   } catch {
-    // contradiction check is best-effort; ignore failures and keep original concept
+    agentLog("concept", `✗ 모순 체크 실패 (best-effort, 원본 컨셉 유지)`);
   }
 
   return NextResponse.json({ concept, contradictionIssue });

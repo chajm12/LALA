@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { openai } from "@/lib/openai";
+import { agentLog } from "@/lib/log";
 
 const MIN_MARGIN_RATE = 0.5;
 const MAX_MARGIN_RATE = 0.8;
@@ -87,6 +88,7 @@ export async function POST(req: Request) {
   let candidates: MaterialCandidate[] | null = null;
 
   for (let i = 0; i <= MAX_RETRIES; i++) {
+    agentLog("cost", `[${i}회차] 시장 조사 시작 — 원단: ${materials.join(", ")}`);
     const research = await researchMarket(concept, materials);
     const raw = await estimateCost(concept, materials, research);
 
@@ -100,6 +102,11 @@ export async function POST(req: Request) {
       MAX_MARGIN_RATE,
     );
     const sellCost = Math.round(totalCost / (1 - marginRate));
+
+    agentLog(
+      "cost",
+      `[${i}회차] 원가=${totalCost.toLocaleString()}원, 마진=${Math.round(marginRate * 100)}%, 판매가=${sellCost.toLocaleString()}원`,
+    );
 
     history.push({
       iteration: i,
@@ -115,15 +122,35 @@ export async function POST(req: Request) {
       candidates,
     });
 
-    if (marginRate >= MARGIN_RETRY_THRESHOLD || i === MAX_RETRIES) break;
+    if (marginRate >= MARGIN_RETRY_THRESHOLD) {
+      agentLog("cost", `✓ 마진 기준(${Math.round(MARGIN_RETRY_THRESHOLD * 100)}%) 충족 → 재평가 종료`);
+      break;
+    }
+    if (i === MAX_RETRIES) {
+      agentLog("cost", `⚠ 마진 기준 미달이지만 최대 재시도(${MAX_RETRIES}) 도달 → 종료`);
+      break;
+    }
 
+    agentLog(
+      "cost",
+      `⚠ 마진 ${Math.round(marginRate * 100)}% < 기준 ${Math.round(MARGIN_RETRY_THRESHOLD * 100)}% → 대체 원단 비교 탐색`,
+    );
     const alt = await compareMaterialAlternatives(materials[0], research);
-    if (!Array.isArray(alt.candidates) || !alt.candidates.length || !alt.selected) break;
+    if (!Array.isArray(alt.candidates) || !alt.candidates.length || !alt.selected) {
+      agentLog("cost", `✗ 대체 원단 탐색 실패 → 재평가 종료`);
+      break;
+    }
 
     candidates = alt.candidates;
     reason = typeof alt.reason === "string" ? alt.reason : null;
     materials = [alt.selected, ...materials.slice(1)];
+    agentLog(
+      "cost",
+      `대체 원단 후보 ${alt.candidates.length}개 비교 → "${alt.selected}" 선택 (${reason})`,
+    );
   }
+
+  agentLog("cost", `총 ${history.length}회 평가 완료`);
 
   const last = history[history.length - 1];
   const cost = {

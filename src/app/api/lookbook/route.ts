@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { openai } from "@/lib/openai";
+import { agentLog } from "@/lib/log";
 
 const MAX_RETRIES = 1;
 
@@ -43,23 +44,33 @@ async function critiqueImage(imageDataUrl: string, concept: Record<string, unkno
 export async function POST(req: Request) {
   const { concept } = await req.json();
 
+  agentLog("lookbook", `룩북 이미지 생성 시작 (1차)`);
   let imageUrl = await generateImage(buildPrompt(concept));
   let verified = false;
   let mismatches: string[] = [];
   let retried = false;
 
   for (let i = 0; imageUrl && i <= MAX_RETRIES; i++) {
+    agentLog("lookbook", `Vision으로 이미지-스펙 정합성 검증 중...`);
     try {
       const critique = await critiqueImage(imageUrl, concept);
       verified = Boolean(critique.matches);
       mismatches = Array.isArray(critique.mismatches) ? critique.mismatches : [];
     } catch {
-      // vision critique is best-effort; treat as unverified rather than failing the request
+      agentLog("lookbook", `✗ Vision 검증 실패 (best-effort, 미검증 상태로 진행)`);
       break;
     }
 
-    if (verified || i === MAX_RETRIES) break;
+    if (verified) {
+      agentLog("lookbook", `✓ 스펙 일치 확인됨`);
+      break;
+    }
+    if (i === MAX_RETRIES) {
+      agentLog("lookbook", `⚠ 불일치 남음(재시도 한도 도달): ${mismatches.join(", ")}`);
+      break;
+    }
 
+    agentLog("lookbook", `⚠ 불일치 발견: ${mismatches.join(", ")} → 프롬프트 보강 후 재생성`);
     imageUrl = await generateImage(
       buildPrompt(concept, `Make sure to clearly include: ${mismatches.join("; ")}.`),
     );
