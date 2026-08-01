@@ -8,6 +8,7 @@ type Concept = {
   mood: string;
   colorPalette: string[];
   targetCustomer: string;
+  materials: string[];
 };
 
 type Cost = {
@@ -39,6 +40,8 @@ export default function Home() {
   const [concept, setConcept] = useState<Concept | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [cost, setCost] = useState<Cost | null>(null);
+  const [finalMaterials, setFinalMaterials] = useState<string[] | null>(null);
+  const [substitutionReason, setSubstitutionReason] = useState<string | null>(null);
   const resultsRef = useRef<HTMLElement>(null);
 
   const isRunning = step !== "idle" && step !== "done";
@@ -51,6 +54,8 @@ export default function Home() {
     setConcept(null);
     setImageUrl(null);
     setCost(null);
+    setFinalMaterials(null);
+    setSubstitutionReason(null);
 
     try {
       setStep("trend");
@@ -89,6 +94,8 @@ export default function Home() {
       });
       const costData = await costRes.json();
       setCost(costData.cost);
+      setFinalMaterials(costData.materials ?? null);
+      setSubstitutionReason(costData.substitutionReason ?? null);
 
       setStep("done");
     } catch (e) {
@@ -200,6 +207,14 @@ export default function Home() {
             <p className="mt-1 text-sm text-zinc-500">
               Target: {concept.targetCustomer}
             </p>
+            <p className="mt-1 text-sm text-zinc-500">
+              Materials: {(finalMaterials ?? concept.materials)?.join(", ")}
+            </p>
+            {substitutionReason && (
+              <p className="mt-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                원가 절감을 위해 원단이 자동으로 대체됐어요: {substitutionReason}
+              </p>
+            )}
           </section>
         )}
 
