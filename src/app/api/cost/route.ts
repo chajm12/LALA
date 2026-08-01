@@ -89,8 +89,14 @@ export async function POST(req: Request) {
     let candidates: MaterialCandidate[] | null = null;
 
     for (let i = 0; i <= MAX_RETRIES; i++) {
-      agentLog("cost", `[${i}회차] 시장 조사 시작 — 원단: ${materials.join(", ")}`);
+      agentLog(
+        "cost",
+        `[${i}회차] 시장 조사 시작 — 원단: ${materials.join(", ")}`,
+        "responses.create + web_search_preview · gpt-4o",
+      );
       const research = await researchMarket(concept, materials);
+
+      agentLog("cost", `[${i}회차] 원가 추정 요청`, "chat.completions · gpt-4o");
       const raw = await estimateCost(concept, materials, research);
 
       const materialCost = Number(raw.materialCost) || 0;
@@ -135,6 +141,7 @@ export async function POST(req: Request) {
       agentLog(
         "cost",
         `⚠ 마진 ${Math.round(marginRate * 100)}% < 기준 ${Math.round(MARGIN_RETRY_THRESHOLD * 100)}% → 대체 원단 비교 탐색`,
+        "chat.completions · gpt-4o",
       );
       const alt = await compareMaterialAlternatives(materials[0], research);
       if (!Array.isArray(alt.candidates) || !alt.candidates.length || !alt.selected) {

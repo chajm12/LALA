@@ -51,60 +51,78 @@ async function critiqueImage(imageDataUrl: string, concept: Record<string, unkno
 }
 
 export async function POST(req: Request) {
-  const { concept } = await req.json();
+  try {
+    const { concept } = await req.json();
 
-  agentLog("lookbook", `룩북 이미지 생성 시작 (1차)`);
-  let gen = await generateImage(buildPrompt(concept));
+    agentLog("lookbook", `룩북 이미지 생성 시작 (1차)`, "images.generate · gpt-image-1");
+    let gen = await generateImage(buildPrompt(concept));
 
-  if (!gen.imageUrl && gen.error) {
-    agentLog("lookbook", `✗ 생성 실패: ${gen.error} → 안전한 프롬프트로 1회 재시도`);
-    gen = await generateImage(
-      `${buildPrompt(concept)} Tasteful, fully clothed, professional catalog photography, no suggestive poses or framing.`,
-    );
     if (!gen.imageUrl && gen.error) {
-      agentLog("lookbook", `✗ 재시도도 실패: ${gen.error}`);
+      agentLog(
+        "lookbook",
+        `✗ 생성 실패: ${gen.error} → 안전한 프롬프트로 1회 재시도`,
+        "images.generate · gpt-image-1",
+      );
+      gen = await generateImage(
+        `${buildPrompt(concept)} Tasteful, fully clothed, professional catalog photography, no suggestive poses or framing.`,
+      );
+      if (!gen.imageUrl && gen.error) {
+        agentLog("lookbook", `✗ 재시도도 실패: ${gen.error}`);
+      }
     }
+
+    let imageUrl = gen.imageUrl;
+    const generationError = gen.error;
+    let verified = false;
+    let mismatches: string[] = [];
+    let retried = false;
+
+    for (let i = 0; imageUrl && i <= MAX_RETRIES; i++) {
+      agentLog(
+        "lookbook",
+        `Vision으로 이미지-스펙 정합성 검증 중...`,
+        "chat.completions (vision) · gpt-4o",
+      );
+      try {
+        const critique = await critiqueImage(imageUrl, concept);
+        verified = Boolean(critique.matches);
+        mismatches = Array.isArray(critique.mismatches) ? critique.mismatches : [];
+      } catch {
+        agentLog("lookbook", `✗ Vision 검증 실패 (best-effort, 미검증 상태로 진행)`);
+        break;
+      }
+
+      if (verified) {
+        agentLog("lookbook", `✓ 스펙 일치 확인됨`);
+        break;
+      }
+      if (i === MAX_RETRIES) {
+        agentLog("lookbook", `⚠ 불일치 남음(재시도 한도 도달): ${mismatches.join(", ")}`);
+        break;
+      }
+
+      agentLog(
+        "lookbook",
+        `⚠ 불일치 발견: ${mismatches.join(", ")} → 프롬프트 보강 후 재생성`,
+        "images.generate · gpt-image-1",
+      );
+      const retry = await generateImage(
+        buildPrompt(concept, `Make sure to clearly include: ${mismatches.join("; ")}.`),
+      );
+      imageUrl = retry.imageUrl;
+      retried = true;
+    }
+
+    return NextResponse.json({
+      imageUrl,
+      verified,
+      mismatches,
+      retried,
+      error: imageUrl ? null : generationError,
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "룩북 생성 중 알 수 없는 오류";
+    agentLog("lookbook", `✗ 요청 실패: ${message}`);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-
-  let imageUrl = gen.imageUrl;
-  const generationError = gen.error;
-  let verified = false;
-  let mismatches: string[] = [];
-  let retried = false;
-
-  for (let i = 0; imageUrl && i <= MAX_RETRIES; i++) {
-    agentLog("lookbook", `Vision으로 이미지-스펙 정합성 검증 중...`);
-    try {
-      const critique = await critiqueImage(imageUrl, concept);
-      verified = Boolean(critique.matches);
-      mismatches = Array.isArray(critique.mismatches) ? critique.mismatches : [];
-    } catch {
-      agentLog("lookbook", `✗ Vision 검증 실패 (best-effort, 미검증 상태로 진행)`);
-      break;
-    }
-
-    if (verified) {
-      agentLog("lookbook", `✓ 스펙 일치 확인됨`);
-      break;
-    }
-    if (i === MAX_RETRIES) {
-      agentLog("lookbook", `⚠ 불일치 남음(재시도 한도 도달): ${mismatches.join(", ")}`);
-      break;
-    }
-
-    agentLog("lookbook", `⚠ 불일치 발견: ${mismatches.join(", ")} → 프롬프트 보강 후 재생성`);
-    const retry = await generateImage(
-      buildPrompt(concept, `Make sure to clearly include: ${mismatches.join("; ")}.`),
-    );
-    imageUrl = retry.imageUrl;
-    retried = true;
-  }
-
-  return NextResponse.json({
-    imageUrl,
-    verified,
-    mismatches,
-    retried,
-    error: imageUrl ? null : generationError,
-  });
 }

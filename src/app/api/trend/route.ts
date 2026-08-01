@@ -6,7 +6,11 @@ export async function POST(req: Request) {
   try {
     const { keyword } = await req.json();
 
-    agentLog("trend", `"${keyword}" 키워드로 웹검색 기반 트렌드 조사 시작`);
+    agentLog(
+      "trend",
+      `"${keyword}" 키워드로 웹검색 기반 트렌드 조사 시작`,
+      "responses.create + web_search_preview · gpt-4o",
+    );
 
     const response = await openai.responses.create({
       model: "gpt-4o",

@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   try {
     const { keyword, trend } = await req.json();
 
-    agentLog("concept", `"${keyword}" 기반 컨셉 기획 시작`);
+    agentLog("concept", `"${keyword}" 기반 컨셉 기획 시작`, "chat.completions · gpt-4o");
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
@@ -51,7 +51,7 @@ export async function POST(req: Request) {
     );
 
     let contradictionIssue: string | null = null;
-    agentLog("concept", `시즌/소재 모순 체크 중...`);
+    agentLog("concept", `시즌/소재 모순 체크 중...`, "chat.completions · gpt-4o");
     try {
       const check = await checkContradiction(concept);
       if (check.hasContradiction && Array.isArray(check.fixedMaterials) && check.fixedMaterials.length) {
