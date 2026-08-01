@@ -28,7 +28,7 @@ async function estimateCost(
       {
         role: "system",
         content:
-          "너는 의류 제작 원가 산출 전문가야. 아래 실시간 시장 조사 결과를 근거로 삼아 제작 원가와 마진율을 JSON으로 산출해줘. 필드: materialCost, laborCost, overheadCost (모두 KRW 숫자), marginRate (0~1 사이 숫자, 조사된 통상 마진율 범위에서 선택), breakdown(string[]) - 조사 결과의 구체적 수치를 인용해서 산출 근거 설명. totalCost나 판매가는 계산하지 마 (별도로 계산함). breakdown은 컨셉 설명과 같은 언어로 작성해.",
+          "너는 의류 제작 원가 산출 전문가야. 아래 실시간 시장 조사 결과를 근거로 삼아 제작 원가와 마진율을 JSON으로 산출해줘. 필드: materialCost, laborCost, overheadCost (모두 KRW 숫자), marginRate (마진율 = (판매가-원가)/판매가 정의상 절대 1을 넘을 수 없는 0~1 사이 소수. 조사된 통상 마진율 범위에서 선택하되 0.3~0.8 사이로 답해. 예: 마진 65%면 0.65. '원가의 몇 배로 파는지'를 뜻하는 마크업 배수와 절대 혼동하지 마), breakdown(string[]) - 조사 결과의 구체적 수치를 인용해서 산출 근거 설명, marginRate와 반드시 같은 숫자를 언급해야 함. totalCost나 판매가는 계산하지 마 (별도로 계산함). breakdown은 컨셉 설명과 같은 언어로 작성해.",
       },
       {
         role: "user",
@@ -104,11 +104,20 @@ export async function POST(req: Request) {
       const overheadCost = Number(raw.overheadCost) || 0;
       const totalCost = materialCost + laborCost + overheadCost;
 
-      const marginRate = Math.min(
-        Math.max(Number(raw.marginRate) || 0.65, MIN_MARGIN_RATE),
-        MAX_MARGIN_RATE,
-      );
+      const rawMarginRate = Number(raw.marginRate) || 0.65;
+      const marginRate = Math.min(Math.max(rawMarginRate, MIN_MARGIN_RATE), MAX_MARGIN_RATE);
       const sellCost = Math.round(totalCost / (1 - marginRate));
+
+      const breakdown: string[] = Array.isArray(raw.breakdown) ? raw.breakdown : [];
+      if (Math.abs(rawMarginRate - marginRate) > 0.01) {
+        agentLog(
+          "cost",
+          `⚠ AI가 제안한 마진율(${Math.round(rawMarginRate * 100)}%)이 비정상 범위라 ${Math.round(marginRate * 100)}%로 보정`,
+        );
+        breakdown.push(
+          `(자동 보정) AI가 처음 제안한 마진율은 ${Math.round(rawMarginRate * 100)}%였지만, 마진율은 정의상 100%를 넘을 수 없어 ${Math.round(marginRate * 100)}%로 조정했습니다.`,
+        );
+      }
 
       agentLog(
         "cost",
@@ -124,7 +133,7 @@ export async function POST(req: Request) {
         totalCost,
         marginRate,
         sellCost,
-        breakdown: Array.isArray(raw.breakdown) ? raw.breakdown : [],
+        breakdown,
         reason,
         candidates,
       });
