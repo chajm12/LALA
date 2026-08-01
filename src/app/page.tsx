@@ -218,7 +218,7 @@ export default function Home() {
             Fashion Planning Agent
           </h1>
           <p className="max-w-md text-sm text-violet-100 sm:text-base">
-            한 줄의 아이디어만으로 트렌드 조사부터 룩북, 원가 초안까지 몇 분 만에 — 두 가지 방향으로 비교해서
+            한 줄의 아이디어만으로 트렌드 조사부터 룩북, 원가 초안까지 몇 분 만에
           </p>
         </div>
 
