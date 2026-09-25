@@ -40,7 +40,7 @@ async function parseRequest(keyword: string, trace: TraceEvent[]): Promise<Parse
   "focusCategories": ["사용자가 특별히 추천을 요구한 품목 카테고리 (예: 신발)"]
 }`,
     },
-  ], { temperature: 0.1, maxTokens: 800, label: "입력 해석", onFallback: fallbackLogger("trend", trace) });
+  ], { temperature: 0.1, maxTokens: 800, label: "입력 해석", primaryTimeoutMs: 20_000, onFallback: fallbackLogger("trend", trace) });
 
   const date = typeof raw.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.date) ? raw.date : nextSaturday();
   return {
