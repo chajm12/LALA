@@ -87,7 +87,8 @@ export async function runAgent(
   const trace: TraceEvent[] = [];
   const origPush = trace.push.bind(trace);
   trace.push = (...events: TraceEvent[]) => { for (const ev of events) emit({ type: "trace", event: ev }); return origPush(...events); };
-  const emitState = (patch: Partial<AgentState>) => emit({ type: "state", patch: serializeState({ ...emptyState(""), ...patch } as AgentState) });
+  // 진행 중 패치에는 이미지를 그대로 담는다 (클라이언트가 보관). 되돌려 받는 최종 state 만 serializeState 로 벗긴다.
+  const emitState = (patch: Partial<AgentState>) => emit({ type: "state", patch });
 
   const messages: Msg[] = [
     { role: "system", content: `${SYSTEM_PROMPT}\n\n오늘: ${new Date().toISOString().slice(0, 10)}\n현재 작업 상태:\n${JSON.stringify(summarizeState(state))}` },

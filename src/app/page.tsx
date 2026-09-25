@@ -219,7 +219,7 @@ function AgentTracePanel({ step, events }: { step: Step; events: TraceEvent[] })
   }, [events.length]);
 
   return (
-    <aside className="flex max-h-[calc(100vh-3rem)] flex-col rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+    <aside className="flex min-h-0 flex-1 flex-col rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
         <div className="flex items-center gap-2">
           <span
@@ -345,7 +345,7 @@ function EvaluationList({
   }
 
   return (
-    <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+    <div className="rounded-md bg-zinc-50 p-4 dark:bg-zinc-900">
       <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
         {title}
       </p>
@@ -353,7 +353,7 @@ function EvaluationList({
         {evaluations.map((evaluation, index) => {
           const rankMovement = getRankMovement(evaluation, index);
           return (
-          <div key={`${title}-${evaluation.id}`} className="rounded-md bg-zinc-50 p-3 dark:bg-zinc-900">
+          <div key={`${title}-${evaluation.id}`} className="rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -492,7 +492,7 @@ export default function Home() {
   }
 
 
-  function looksToVariants(): Variant[] {
+  function looksToVariants(finished = step === "done"): Variant[] {
     return finalIdsRef.current
       .map((id) => looksRef.current[id])
       .filter((look): look is ServerLook => Boolean(look))
@@ -506,7 +506,9 @@ export default function Home() {
         lookbookError: look.lookbook?.error ?? null,
         finalMaterials: null,
         shoppingLinks: look.links ?? [],
-        shoppingError: look.links && look.links.length === 0 ? "조건에 맞는 상품을 카탈로그에서 찾지 못했어요." : null,
+        shoppingError: look.links
+          ? look.links.length === 0 ? "조건에 맞는 상품을 카탈로그에서 찾지 못했어요." : null
+          : finished ? "이 룩은 상품 매칭을 건너뛰었어요. 대화창에서 요청하면 매칭해 드려요." : null,
       }));
   }
 
@@ -615,7 +617,8 @@ export default function Home() {
       setElapsedMs(finishedElapsedMs);
       setStartedAt(null);
       setStep("done");
-      const finalVariants = looksToVariants();
+      const finalVariants = looksToVariants(true);
+      setVariants(finalVariants);
       saveHistory({
         id: runId,
         keyword: nextChat[0]?.content ?? userText,
@@ -778,9 +781,9 @@ export default function Home() {
         {(trend || step !== "idle") && (
           <section>
             <div className="flex flex-col rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-              <h2 className="font-semibold text-black dark:text-zinc-50">1. 트렌드·날씨 분석</h2>
+              <h2 className="font-semibold text-black dark:text-zinc-50">1. 스타일 브리핑</h2>
               <p className="mt-1 text-sm text-zinc-500">
-                분석 내용은 이 박스 안에서 스크롤해 확인할 수 있어요.
+                날짜·장소의 실제 날씨와 상황, 체형을 근거로 방향을 정합니다.
               </p>
               {trend ? (
                 <div className="mt-3 max-h-96 overflow-y-auto rounded-md bg-zinc-50 p-3 text-sm text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
@@ -797,9 +800,9 @@ export default function Home() {
         )}
 
         {evaluationProcess && (
-          <section>
-            <h2 className="font-semibold text-black dark:text-zinc-50">2. 후보 생성 → 평가 → 수정 루프</h2>
-            <p className="mt-1 text-xs text-zinc-500">
+          <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <h2 className="font-semibold text-black dark:text-zinc-50">2. 후보 평가 루프</h2>
+            <p className="mt-1 text-sm text-zinc-500">
               생성 모델과 별도의 평가 모델이 채점하고, 통과 기준({evaluationProcess.passScore}점) 미달이면 수정 후 재평가합니다.
               이번 실행은 {evaluationProcess.iterations}회 평가로 종료됐어요.
             </p>
@@ -820,13 +823,13 @@ export default function Home() {
               </ol>
             )}
 
-            <div className="mt-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+            <div className="mt-3 rounded-md bg-zinc-50 p-4 dark:bg-zinc-900">
               <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
                 후보 {evaluationProcess.originalCandidates.length}개 생성
               </p>
               <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {evaluationProcess.originalCandidates.map((candidate) => (
-                  <div key={candidate.id ?? candidate.name} className="rounded-md bg-zinc-50 p-2 text-sm dark:bg-zinc-900">
+                  <div key={candidate.id ?? candidate.name} className="rounded-md border border-zinc-200 bg-white p-2 text-sm dark:border-zinc-800 dark:bg-zinc-950">
                     <p className="font-medium text-black dark:text-zinc-50">{candidate.name}</p>
                     <p className="text-xs text-zinc-500">{candidate.mood}</p>
                   </div>
@@ -851,11 +854,14 @@ export default function Home() {
         )}
 
         {variants.length > 0 && (
-          <section>
-            <h2 className="font-semibold text-black dark:text-zinc-50">3. 최종 룩북 2안</h2>
-            <div className="mt-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <h2 className="font-semibold text-black dark:text-zinc-50">3. 룩북</h2>
+            <p className="mt-1 text-sm text-zinc-500">
+              최종 2안의 이미지를 생성해 VLM 으로 스펙 일치를 검증하고, 아이템마다 카탈로그 상품을 매칭합니다.
+            </p>
+            <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
               {variants.map((v) => (
-                <div key={v.concept.id ?? v.concept.name} className="min-w-0 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div key={v.concept.id ?? v.concept.name} className="min-w-0 rounded-md bg-zinc-50 p-4 dark:bg-zinc-900">
                   <h3 className="break-keep text-lg font-semibold text-black dark:text-zinc-50">
                     {v.concept.name}
                   </h3>
@@ -956,22 +962,26 @@ export default function Home() {
           </section>
         )}
 
-        {chat.length > 0 && (
-          <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-            <h2 className="font-semibold text-black dark:text-zinc-50">4. 에이전트와 대화</h2>
-            <p className="mt-1 text-xs text-zinc-500">
-              결과를 보고 이어서 요청하세요. 에이전트가 바꿔야 할 부분만 골라 다시 작업합니다 (예: &quot;두 번째 룩 신발을 로퍼로&quot;, &quot;날짜를 11월 1일로&quot;).
-            </p>
-            <div className="mt-3 flex max-h-80 flex-col gap-2 overflow-y-auto">
+        </div>
+
+        {step !== "idle" && (
+          <div className="flex flex-col gap-4 lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:w-80 lg:shrink-0">
+            {chat.length > 0 && (
+          <section className="flex max-h-[46vh] flex-col rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+              <p className="text-sm font-semibold text-black dark:text-zinc-50">에이전트와 대화</p>
+              <p className="mt-0.5 text-[11px] text-zinc-500">바꿀 부분만 골라 다시 작업해요. 예: &quot;두 번째 룩 신발을 로퍼로&quot;</p>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
               {chat.map((turn, i) => (
                 <div key={i} className={turn.role === "user" ? "flex justify-end" : "flex justify-start"}>
                   <div
                     className={
                       turn.role === "user"
-                        ? "max-w-[85%] rounded-2xl rounded-br-sm bg-zinc-900 px-3.5 py-2 text-sm text-white dark:bg-zinc-100 dark:text-black"
+                        ? "max-w-[90%] rounded-2xl rounded-br-sm bg-zinc-900 px-3 py-1.5 text-xs text-white dark:bg-zinc-100 dark:text-black"
                         : turn.kind === "question"
-                        ? "max-w-[85%] rounded-2xl rounded-bl-sm border border-violet-200 bg-violet-50 px-3.5 py-2 text-sm text-violet-900 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-100"
-                        : "max-w-[85%] rounded-2xl rounded-bl-sm bg-zinc-100 px-3.5 py-2 text-sm text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
+                        ? "max-w-[90%] rounded-2xl rounded-bl-sm border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs text-violet-900 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-100"
+                        : "max-w-[90%] rounded-2xl rounded-bl-sm bg-zinc-100 px-3 py-1.5 text-xs text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
                     }
                   >
                     {turn.kind === "question" && <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-violet-500">질문</span>}
@@ -981,7 +991,7 @@ export default function Home() {
               ))}
               {isRunning && (
                 <div className="flex justify-start">
-                  <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-zinc-100 px-3.5 py-2 text-sm text-zinc-500 dark:bg-zinc-900">
+                  <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-zinc-100 px-3 py-1.5 text-xs text-zinc-500 dark:bg-zinc-900">
                     <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-700 dark:border-t-zinc-300" />
                     {stepLabels[step]}
                   </div>
@@ -990,7 +1000,7 @@ export default function Home() {
               <div ref={chatEndRef} />
             </div>
             <form
-              className="mt-3 flex gap-2"
+              className="flex gap-2 border-t border-zinc-200 p-3 dark:border-zinc-800"
               onSubmit={(e) => {
                 e.preventDefault();
                 sendFollowUp();
@@ -1001,22 +1011,18 @@ export default function Home() {
                 onChange={(e) => setFollowUp(e.target.value)}
                 placeholder={isRunning ? "에이전트가 작업 중이에요..." : "후속 요청을 입력하세요"}
                 disabled={isRunning}
-                className="flex-1 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-50"
+                className="min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-50"
               />
               <button
                 type="submit"
                 disabled={isRunning || !followUp.trim()}
-                className="rounded-md bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+                className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white transition hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
               >
                 보내기
               </button>
             </form>
           </section>
-        )}
-        </div>
-
-        {step !== "idle" && (
-          <div className="lg:sticky lg:top-6 lg:w-80 lg:shrink-0">
+            )}
             <AgentTracePanel step={step} events={traceEvents} />
           </div>
         )}

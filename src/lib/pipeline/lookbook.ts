@@ -46,13 +46,41 @@ async function composeImagePrompt(concept: Record<string, unknown>, trace: Trace
 Return {"outfit": "<comma-separated English list of the garments with color/material/fit, max 40 words>", "prompt": "<one paragraph, max 80 words, English only: editorial full-body lookbook photo, ${bodyDescription(concept)}, the outfit, fit/silhouette, mood, studio lighting, neutral background. No body-part anatomy words, no brand names.>"}`,
     },
   ], { temperature: 0.2, maxTokens: 500, onFallback: fallbackLogger("lookbook", trace) });
-  const outfit = String(out.outfit ?? (Array.isArray(concept.outfitItems) ? concept.outfitItems.join(", ") : ""));
-  const prompt = String(out.prompt ?? "").trim() || minimalPrompt(concept, outfit);
+  const outfit = replaceKnownTriggers(String(out.outfit ?? (Array.isArray(concept.outfitItems) ? concept.outfitItems.join(", ") : "")));
+  const prompt = replaceKnownTriggers(String(out.prompt ?? "").trim()) || minimalPrompt(concept, outfit);
   return { prompt, outfit };
 }
 
 function minimalPrompt(concept: Record<string, unknown>, outfit: string) {
   return `Editorial fashion lookbook photo, full body, ${bodyDescription(concept)}, wearing ${outfit}. Studio lighting, neutral background, natural pose, head to shoes visible.`;
+}
+
+/**
+ * FLUX 호스팅 필터는 단순 단어 목록이라 패션 색상명("sage" 등 식물·음식 이름)에도 걸린다.
+ * 필터에 걸리면 LLM 으로 기본 색상어·기본 의류명만 쓰는 프롬프트로 다시 쓴다.
+ */
+const KNOWN_TRIGGERS: Record<string, string> = { sage: "light green", olive: "dark green", camel: "tan", mustard: "yellow", wine: "dark red", nude: "beige", blush: "light pink", coral: "orange pink", rust: "orange brown", cream: "off white" };
+
+function replaceKnownTriggers(text: string) {
+  return Object.entries(KNOWN_TRIGGERS).reduce((acc, [bad, good]) => acc.replace(new RegExp(`\\b${bad}\\b`, "gi"), good), text);
+}
+
+async function sanitizePrompt(concept: Record<string, unknown>, outfit: string, trace: TraceEvent[]) {
+  agentLog("lookbook", "필터 회피용으로 기본 색상어·의류명만 쓰는 프롬프트로 재작성", `chat.completions · ${JUDGE_MODEL}`, trace);
+  const gender = /여성|women|female/i.test(String(concept.targetCustomer ?? "")) ? "woman" : "man";
+  const out = await chatJson<{ prompt?: string }>(JUDGE_MODEL, [
+    { role: "system", content: "You rewrite image prompts to pass a strict keyword filter. Output JSON only." },
+    {
+      role: "user",
+      content: `Outfit: ${replaceKnownTriggers(outfit)}
+
+Rewrite as one sentence (max 45 words): "Catalog photo of a ${gender} standing in a photo studio, wearing ..., plain background, full length."
+Rules: use ONLY these color words: white, black, gray, navy, blue, light blue, green, dark green, beige, tan, brown, red, yellow, pink, orange. Use simple garment nouns (shirt, t-shirt, sweater, jacket, coat, pants, jeans, shoes, sneakers, boots, bag). No fabric brand names, no plant/food/herb words, no body-part words.
+Output {"prompt": "..."}`,
+    },
+  ], { temperature: 0.1, maxTokens: 300, onFallback: fallbackLogger("lookbook", trace) });
+  const p = String(out.prompt ?? "").trim();
+  return p || `Catalog photo of a ${gender} standing in a photo studio, wearing ${replaceKnownTriggers(outfit)}, plain background, full length.`;
 }
 
 export type LookbookResult = { imageUrl: string | null; verified: boolean; mismatches: string[]; retried: boolean; provider: string; error: string | null };
@@ -63,8 +91,12 @@ export async function renderLookbook(concept: Record<string, unknown>, trace: Tr
     agentLog("lookbook", "룩북 이미지 생성 (1차)", "tool:generate_image", trace);
     let gen = await generateImage(prompt);
     if (!gen.imageUrl && gen.error) {
-      agentLog("lookbook", `✗ 생성 실패: ${gen.error} → 최소 프롬프트로 1회 재시도`, "tool:generate_image", trace);
+      agentLog("lookbook", `✗ 생성 실패: ${gen.error} → 최소 프롬프트로 재시도 (실패 프롬프트: ${prompt.slice(0, 140)}…)`, "tool:generate_image", trace);
       gen = await generateImage(minimalPrompt(concept, outfit));
+    }
+    if (!gen.imageUrl && gen.error) {
+      agentLog("lookbook", `✗ 재시도 실패: ${gen.error} → 필터 회피 프롬프트로 마지막 시도`, "tool:generate_image", trace);
+      gen = await generateImage(await sanitizePrompt(concept, outfit, trace));
     }
 
     let imageUrl = gen.imageUrl;
