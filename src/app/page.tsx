@@ -238,61 +238,130 @@ async function postJson(url: string, body: unknown) {
   return data;
 }
 
+const SCOPE_STYLE: Record<string, string> = {
+  trend: "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
+  weather: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300",
+  catalog: "bg-lime-100 text-lime-700 dark:bg-lime-950 dark:text-lime-300",
+  concept: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300",
+  evaluate: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300",
+  lookbook: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+  shopping: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+  agent: "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300",
+};
+
+function formatClock(t: number) {
+  return new Date(t).toLocaleTimeString("en-GB", { hour12: false });
+}
+
 function AgentTracePanel({ step, events }: { step: Step; events: TraceEvent[] }) {
+  const logRef = useRef<HTMLOListElement | null>(null);
   const activeIndex =
     step === "idle" ? -1 : step === "done" ? AGENT_TRACE_STEPS.length : AGENT_TRACE_STEPS.findIndex((item) => item.key === step);
+  const running = step !== "idle" && step !== "done";
+  const modelCalls = events.filter((e) => e.tool?.includes("chat.completions")).length;
+  const toolCalls = events.filter((e) => e.tool?.startsWith("tool:")).length;
+  const fallbacks = events.filter((e) => e.tool === "fallback").length;
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [events.length]);
 
   return (
-    <aside className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-      <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
-        Agent Trace
-      </p>
-      <div className="mt-4 flex flex-col gap-3">
+    <aside className="flex max-h-[calc(100vh-3rem)] flex-col rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+        <div className="flex items-center gap-2">
+          <span
+            className={
+              running
+                ? "h-2 w-2 animate-pulse rounded-full bg-violet-500"
+                : step === "done"
+                ? "h-2 w-2 rounded-full bg-emerald-500"
+                : "h-2 w-2 rounded-full bg-zinc-300 dark:bg-zinc-700"
+            }
+          />
+          <p className="text-sm font-semibold text-black dark:text-zinc-50">Agent Trace</p>
+        </div>
+        <p className="text-[11px] text-zinc-500">{running ? "실행 중" : step === "done" ? "완료" : "대기"}</p>
+      </div>
+
+      <ol className="flex flex-col gap-1 px-4 py-3">
         {AGENT_TRACE_STEPS.map((item, index) => {
           const isDone = activeIndex > index;
           const isActive = activeIndex === index;
           return (
-            <div
-              key={item.key}
-              className={
-                isActive
-                  ? "rounded-md border border-violet-200 bg-violet-50 p-3 dark:border-violet-900 dark:bg-violet-950/50"
-                  : "rounded-md bg-zinc-50 p-3 dark:bg-zinc-900"
-              }
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className={
-                    isDone
-                      ? "flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[11px] text-white"
-                      : isActive
-                      ? "h-5 w-5 animate-pulse rounded-full border-2 border-violet-500"
-                      : "h-5 w-5 rounded-full border border-zinc-300 dark:border-zinc-700"
-                  }
-                >
-                  {isDone ? "✓" : ""}
-                </span>
-                <p className="text-sm font-medium text-black dark:text-zinc-50">{item.title}</p>
-              </div>
-              <p className="mt-1 pl-7 text-xs leading-relaxed text-zinc-500 break-keep">{item.detail}</p>
-            </div>
+            <li key={item.key} className="flex items-center gap-2.5 py-1">
+              <span
+                className={
+                  isDone
+                    ? "flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-white"
+                    : isActive
+                    ? "h-4 w-4 animate-pulse rounded-full border-2 border-violet-500"
+                    : "h-4 w-4 rounded-full border border-zinc-300 dark:border-zinc-700"
+                }
+              >
+                {isDone ? "✓" : ""}
+              </span>
+              <span
+                className={
+                  isActive
+                    ? "text-sm font-medium text-black dark:text-zinc-50"
+                    : isDone
+                    ? "text-sm text-zinc-500"
+                    : "text-sm text-zinc-400 dark:text-zinc-600"
+                }
+              >
+                {item.title}
+              </span>
+            </li>
           );
         })}
-      </div>
-      {events.length > 0 && (
-        <div className="mt-4 border-t border-zinc-200 pt-3 dark:border-zinc-800">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">실행 로그 (서버 실제 호출)</p>
-          <ol className="mt-2 max-h-72 space-y-1.5 overflow-y-auto font-mono text-[11px] leading-relaxed">
-            {events.map((e, i) => (
-              <li key={`${e.t}-${i}`} className="break-keep text-zinc-600 dark:text-zinc-300">
-                <span className="mr-1 rounded bg-zinc-100 px-1 text-[10px] uppercase text-violet-600 dark:bg-zinc-800 dark:text-violet-300">{e.scope}</span>
-                {e.message}
-                {e.tool && <span className="ml-1 text-zinc-400">[{e.tool}]</span>}
-              </li>
-            ))}
-          </ol>
+      </ol>
+
+      <div className="grid grid-cols-3 gap-2 border-y border-zinc-200 px-4 py-2.5 text-center dark:border-zinc-800">
+        <div>
+          <p className="text-base font-semibold tabular-nums text-black dark:text-zinc-50">{modelCalls}</p>
+          <p className="text-[10px] text-zinc-500">모델 호출</p>
         </div>
-      )}
+        <div>
+          <p className="text-base font-semibold tabular-nums text-black dark:text-zinc-50">{toolCalls}</p>
+          <p className="text-[10px] text-zinc-500">도구 호출</p>
+        </div>
+        <div>
+          <p className={fallbacks ? "text-base font-semibold tabular-nums text-amber-600" : "text-base font-semibold tabular-nums text-black dark:text-zinc-50"}>{fallbacks}</p>
+          <p className="text-[10px] text-zinc-500">모델 대체</p>
+        </div>
+      </div>
+
+      <ol ref={logRef} className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+        {events.length === 0 && (
+          <li className="px-1 py-6 text-center text-xs text-zinc-400">서버 실행 로그가 여기에 쌓여요.</li>
+        )}
+        {events.map((e, i) => {
+          const isWarn = e.message.startsWith("⚠") || e.message.startsWith("✗");
+          return (
+            <li
+              key={`${e.t}-${i}`}
+              className={
+                isWarn
+                  ? "flex gap-2 rounded-md bg-amber-50 px-1.5 py-1.5 dark:bg-amber-950/30"
+                  : "flex gap-2 px-1.5 py-1.5"
+              }
+            >
+              <span className="mt-0.5 shrink-0 font-mono text-[10px] tabular-nums text-zinc-400">{formatClock(e.t)}</span>
+              <div className="min-w-0 flex-1">
+                <span className={`mr-1.5 inline-block rounded px-1 py-px text-[10px] font-medium ${SCOPE_STYLE[e.scope] ?? SCOPE_STYLE.agent}`}>
+                  {e.scope}
+                </span>
+                <span className="break-keep text-xs leading-relaxed text-zinc-700 dark:text-zinc-300">{e.message}</span>
+                {e.tool && e.tool !== "fallback" && (
+                  <span className="ml-1 font-mono text-[10px] text-zinc-400">{e.tool.replace("chat.completions · ", "")}</span>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
     </aside>
   );
 }
@@ -747,9 +816,11 @@ export default function Home() {
           </ol>
         )}
 
+        <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
+        <div className="flex min-w-0 flex-1 flex-col gap-8">
         {(trend || step !== "idle") && (
-          <section className="grid items-stretch grid-cols-1 gap-4 lg:grid-cols-[3fr_1fr]">
-            <div className="flex h-full min-h-0 flex-col rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+          <section>
+            <div className="flex flex-col rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
               <h2 className="font-semibold text-black dark:text-zinc-50">1. 트렌드·날씨 분석</h2>
               <p className="mt-1 text-sm text-zinc-500">
                 분석 내용은 이 박스 안에서 스크롤해 확인할 수 있어요.
@@ -765,7 +836,6 @@ export default function Home() {
                 </p>
               )}
             </div>
-            <AgentTracePanel step={step} events={traceEvents} />
           </section>
         )}
 
@@ -928,6 +998,14 @@ export default function Home() {
             </div>
           </section>
         )}
+        </div>
+
+        {step !== "idle" && (
+          <div className="lg:sticky lg:top-6 lg:w-80 lg:shrink-0">
+            <AgentTracePanel step={step} events={traceEvents} />
+          </div>
+        )}
+        </div>
       </main>
 
     </div>

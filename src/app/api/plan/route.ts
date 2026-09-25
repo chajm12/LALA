@@ -19,8 +19,8 @@ import {
  * - 프론트 계약(originalCandidates/round1/repairSummary/repairedCandidates/round2/finalConcepts)은 유지하고
  *   rounds(전체 이력)·iterations·trace 를 추가로 돌려준다.
  */
-const MAX_ROUNDS = Number(process.env.PLAN_MAX_ROUNDS ?? 3);
-const PASS_SCORE = Number(process.env.PLAN_PASS_SCORE ?? 82);
+const MAX_ROUNDS = Number(process.env.PLAN_MAX_ROUNDS ?? 2);
+const PASS_SCORE = Number(process.env.PLAN_PASS_SCORE ?? 80);
 
 const CONCEPT_SCHEMA = `Concept 필드:
 id("look_01" 형식, 수정 시에도 id 유지), name, description, mood, colorPalette(string[]), targetCustomer, materials(string[]),
@@ -49,7 +49,7 @@ ${CONCEPT_SCHEMA}
 
 출력: {"candidates": Concept[]}`,
     },
-  ], { temperature: 0.8, maxTokens: 6000, onFallback: fallbackLogger("concept", trace) });
+  ], { temperature: 0.8, maxTokens: 4500, label: "후보 생성", onFallback: fallbackLogger("concept", trace) });
   return normalizeConcepts(out.candidates, parsed?.gender);
 }
 
@@ -81,7 +81,7 @@ ${JSON.stringify(candidates)}
 
 출력: {"evaluations": [{id, name, weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore, failureReasons[], revisionPlan[], decisionReason}]}`,
     },
-  ], { temperature: 0.2, maxTokens: 5000, onFallback: fallbackLogger("evaluate", trace) });
+  ], { temperature: 0.2, maxTokens: 4000, label: `${round}차 평가`, primaryTimeoutMs: 30_000, onFallback: fallbackLogger("evaluate", trace) });
   return normalizeEvaluations(out.evaluations, candidates);
 }
 
@@ -109,7 +109,7 @@ ${CONCEPT_SCHEMA}
 
 출력: {"repairedCandidates": Concept[], "repairSummary": ["후보명: 무엇을 왜 바꿨는지 한 줄" ...]}`,
     },
-  ], { temperature: 0.6, maxTokens: 6000, onFallback: fallbackLogger("concept", trace) });
+  ], { temperature: 0.6, maxTokens: 4500, label: `${round}차 수정`, onFallback: fallbackLogger("concept", trace) });
   const repaired = normalizeConcepts(out.repairedCandidates, parsed?.gender);
   const summary = Array.isArray(out.repairSummary) ? out.repairSummary.map(String) : [];
   return { repaired: repaired.length === candidates.length ? repaired : candidates, summary };

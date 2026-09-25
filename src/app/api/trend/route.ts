@@ -40,7 +40,7 @@ async function parseRequest(keyword: string, trace: TraceEvent[]): Promise<Parse
   "focusCategories": ["사용자가 특별히 추천을 요구한 품목 카테고리 (예: 신발)"]
 }`,
     },
-  ], { temperature: 0.1, maxTokens: 800, onFallback: fallbackLogger("trend", trace) });
+  ], { temperature: 0.1, maxTokens: 800, label: "입력 해석", onFallback: fallbackLogger("trend", trace) });
 
   const date = typeof raw.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.date) ? raw.date : nextSaturday();
   return {
@@ -77,7 +77,7 @@ export async function POST(req: Request) {
     try {
       const s = catalogSummary();
       catalog = `카탈로그 ${s.total}개 상품, 카테고리 분포: ${JSON.stringify(s.byCategory)}`;
-      agentLog("catalog", catalog, "tool:catalog_summary", trace);
+      agentLog("catalog", `카탈로그 ${s.total}개 상품 로드 (${Object.entries(s.byCategory).map(([k, v]) => `${k} ${v}`).join(" · ")})`, "tool:catalog_summary", trace);
     } catch {
       agentLog("catalog", "카탈로그 인덱스 없음 (상품 검색 단계 생략됨)", undefined, trace);
     }
@@ -107,7 +107,7 @@ ${catalog}
 - 사용자 제약(${parsed.constraints.join(", ") || "없음"})을 지키기 위한 주의점
 - 상황과 안 맞는 실패 가능성 (예: 결혼식에 캐주얼)`,
       },
-    ], { temperature: 0.5, maxTokens: 2000, onFallback: fallbackLogger("trend", trace) });
+    ], { temperature: 0.5, maxTokens: 2000, label: "스타일 분석", onFallback: fallbackLogger("trend", trace) });
 
     agentLog("trend", `분석 완료 (${trend.length}자)`, undefined, trace);
     return NextResponse.json({ trend, parsed, weather, trace });

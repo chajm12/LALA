@@ -41,12 +41,24 @@ export type ChatOptions = {
   json?: boolean;
   /** 호출 실패/지연 시 대신 시도할 모델 (기본: JUDGE→PLANNER) */
   fallbackModel?: string | null;
+  /** 명시적 타임아웃(ms). 생략 시 max_tokens 에 비례해 자동 계산 */
+  timeoutMs?: number;
+  /** 1차 모델에만 적용할 짧은 타임아웃(ms). 대기열이 긴 모델을 빨리 포기하고 대체 모델로 넘어갈 때 */
+  primaryTimeoutMs?: number;
+  /** 에러 메시지에 붙일 단계 이름 */
+  label?: string;
   onFallback?: (from: string, to: string, reason: string) => void;
 };
 
 /** 호스팅 무료 엔드포인트는 모델별로 대기열이 크게 출렁이므로 타임아웃 + 재시도 + 대체 모델을 둔다. */
 const NIM_TIMEOUT_MS = Number(process.env.NIM_TIMEOUT_MS ?? 45_000);
 const NIM_RETRIES = Number(process.env.NIM_RETRIES ?? 0);
+/** 긴 JSON 출력(후보 5개 생성 등)은 120B 모델에서 1분을 넘기므로 max_tokens 당 25ms 를 더 준다 */
+const NIM_MS_PER_TOKEN = Number(process.env.NIM_MS_PER_TOKEN ?? 25);
+
+function timeoutFor(opts: ChatOptions) {
+  return opts.timeoutMs ?? Math.max(NIM_TIMEOUT_MS, (opts.maxTokens ?? 8192) * NIM_MS_PER_TOKEN);
+}
 
 function defaultFallback(model: string) {
   if (model === JUDGE_MODEL && JUDGE_MODEL !== PLANNER_MODEL) return PLANNER_MODEL;
@@ -54,7 +66,7 @@ function defaultFallback(model: string) {
   return null;
 }
 
-async function chatOnce(model: string, messages: Msg[], opts: ChatOptions) {
+async function chatOnce(model: string, messages: Msg[], opts: ChatOptions, timeoutOverride?: number) {
   const completion = await nim.chat.completions.create(
     {
       model,
@@ -66,7 +78,7 @@ async function chatOnce(model: string, messages: Msg[], opts: ChatOptions) {
       // @ts-expect-error NVIDIA 확장 필드: Nemotron 3.x reasoning on/off
       chat_template_kwargs: { enable_thinking: opts.thinking ?? false },
     },
-    { timeout: NIM_TIMEOUT_MS, maxRetries: 0 },
+    { timeout: timeoutOverride ?? timeoutFor(opts), maxRetries: 0 },
   );
   return completion.choices[0]?.message?.content ?? "";
 }
@@ -84,9 +96,11 @@ function isRetryable(e: unknown) {
 
 export async function chat(model: string, messages: Msg[], opts: ChatOptions = {}) {
   let lastError: unknown;
+  const fallbackCandidate = opts.fallbackModel === undefined ? defaultFallback(model) : opts.fallbackModel;
+  const primaryTimeout = fallbackCandidate && opts.primaryTimeoutMs ? Math.min(opts.primaryTimeoutMs, timeoutFor(opts)) : undefined;
   for (let attempt = 0; attempt <= NIM_RETRIES; attempt++) {
     try {
-      return await chatOnce(model, messages, opts);
+      return await chatOnce(model, messages, opts, primaryTimeout);
     } catch (e) {
       lastError = e;
       if (!isRetryable(e)) throw e;
@@ -97,9 +111,14 @@ export async function chat(model: string, messages: Msg[], opts: ChatOptions = {
   if (fallback) {
     const reason = lastError instanceof Error ? lastError.message : String(lastError);
     opts.onFallback?.(model, fallback, reason);
-    return chatOnce(fallback, messages, opts);
+    try {
+      return await chatOnce(fallback, messages, opts);
+    } catch (e) {
+      lastError = e;
+    }
   }
-  throw lastError;
+  const msg = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`${opts.label ? `[${opts.label}] ` : ""}${model}${fallback ? ` 및 대체 모델 ${fallback}` : ""} 호출 실패 (${Math.round(timeoutFor(opts) / 1000)}초 제한): ${msg}. NVIDIA 호스팅 엔드포인트가 혼잡할 때 생기며, 잠시 후 다시 시도하거나 .env 의 NIM_TIMEOUT_MS 를 늘려보세요.`);
 }
 
 /** 모델이 가끔 붙이는 주석/trailing comma/코드펜스를 걷어내고 파싱 */
