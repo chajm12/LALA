@@ -24,3 +24,7 @@ yarn-error.log*
 # --- Editors ---
 .vscode/
 .idea/
+
+# 생성물 (npm run catalog:index 로 재생성)
+/data/catalog-index.json
+/data/*.csv

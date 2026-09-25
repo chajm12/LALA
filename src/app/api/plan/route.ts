@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { chatJson, JUDGE_MODEL, PLANNER_MODEL } from "@/lib/nim";
-import { agentLog, type TraceEvent } from "@/lib/log";
+import { agentLog, fallbackLogger, type TraceEvent } from "@/lib/log";
 import {
   applyFinalDecisions,
   normalizeConcepts,
@@ -30,7 +30,7 @@ bodyProfile(키·몸무게 원 숫자 포함), fitStrategy, stylingReason`;
 async function generateCandidates(keyword: string, trend: string, parsed: ParsedRequest | null, trace: TraceEvent[]) {
   agentLog("concept", "무드/핏/소재가 서로 다른 착장 후보 5개 생성", `chat.completions · ${PLANNER_MODEL}`, trace);
   const out = await chatJson<{ candidates: unknown }>(PLANNER_MODEL, [
-    { role: "system", content: "너는 퍼스널 스타일리스트다. 모든 텍스트는 한국어. JSON 만 출력." },
+    { role: "system", content: "너는 퍼스널 스타일리스트다. 모든 텍스트는 한국어(필요 시 영문 브랜드/소재명만 허용, 일본어·한자 금지). JSON 만 출력." },
     {
       role: "user",
       content: `사용자 요청: ${keyword}
@@ -49,7 +49,7 @@ ${CONCEPT_SCHEMA}
 
 출력: {"candidates": Concept[]}`,
     },
-  ], { temperature: 0.8, maxTokens: 6000 });
+  ], { temperature: 0.8, maxTokens: 6000, onFallback: fallbackLogger("concept", trace) });
   return normalizeConcepts(out.candidates, parsed?.gender);
 }
 
@@ -58,7 +58,7 @@ async function judgeCandidates(candidates: Concept[], keyword: string, trend: st
   const out = await chatJson<{ evaluations: unknown }>(JUDGE_MODEL, [
     {
       role: "system",
-      content: "너는 까다로운 QA 평가자다. 생성자와 다른 모델이며 후보를 옹호하지 않는다. 문제가 없어 보여도 개선점을 찾는다. 한국어, JSON 만 출력.",
+      content: "너는 까다로운 QA 평가자다. 생성자와 다른 모델이며 후보를 옹호하지 않는다. 문제가 없어 보여도 개선점을 찾는다. 한국어(일본어·한자 금지), JSON 만 출력.",
     },
     {
       role: "user",
@@ -81,15 +81,15 @@ ${JSON.stringify(candidates)}
 
 출력: {"evaluations": [{id, name, weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore, failureReasons[], revisionPlan[], decisionReason}]}`,
     },
-  ], { temperature: 0.2, maxTokens: 5000 });
+  ], { temperature: 0.2, maxTokens: 5000, onFallback: fallbackLogger("evaluate", trace) });
   return normalizeEvaluations(out.evaluations, candidates);
 }
 
 async function repairCandidates(candidates: Concept[], evaluations: Evaluation[], parsed: ParsedRequest | null, round: number, trace: TraceEvent[]) {
-  const failing = evaluations.filter((e) => e.totalScore < PASS_SCORE).map((e) => e.name);
+  const failing = evaluations.filter((e) => e.totalScore < PASS_SCORE).map((e) => `${e.id} ${e.name}`);
   agentLog("concept", `${round}차 수정: 기준 미달 ${failing.length}개 (${failing.join(", ")}) 평가 피드백 반영`, `chat.completions · ${PLANNER_MODEL}`, trace);
   const out = await chatJson<{ repairedCandidates: unknown; repairSummary: unknown }>(PLANNER_MODEL, [
-    { role: "system", content: "너는 퍼스널 스타일리스트다. 평가자의 피드백을 반영해 후보를 수정한다. 한국어, JSON 만 출력." },
+    { role: "system", content: "너는 퍼스널 스타일리스트다. 평가자의 피드백을 반영해 후보를 실제로 바꾼다. \"원안 유지\"는 통과 후보에만 허용된다. 한국어(일본어·한자 금지), JSON 만 출력." },
     {
       role: "user",
       content: `후보:
@@ -99,7 +99,9 @@ ${JSON.stringify(candidates)}
 ${JSON.stringify(evaluations.map(({ id, name, totalScore, failureReasons, revisionPlan }) => ({ id, name, totalScore, failureReasons, revisionPlan })))}
 
 규칙:
-- 5개 모두 돌려주되 id 는 유지. 총점 ${PASS_SCORE} 이상인 후보는 최소 수정, 미달 후보는 revisionPlan 을 실제 아이템 교체로 반영.
+- 5개 모두 돌려주되 id 는 유지.
+- 총점 ${PASS_SCORE} 미만 후보(${failing.join(", ") || "없음"})는 failureReasons 각각에 대응하는 아이템/소재/색/기장 교체를 outfitItems 와 materials 에 실제로 반영해야 한다. "유지", "사용자 판단에 맡김", "허용 범위로 판단" 같은 회피 표현 금지.
+- 총점 ${PASS_SCORE} 이상 후보는 failureReasons 중 가장 심각한 1개만 고치고 나머지는 유지해도 된다.
 - 후보 간 다양성(무드/핏/소재 차이)은 유지.
 - 사용자 제약(${parsed?.constraints.join(", ") || "없음"}) 준수.
 
@@ -107,7 +109,7 @@ ${CONCEPT_SCHEMA}
 
 출력: {"repairedCandidates": Concept[], "repairSummary": ["후보명: 무엇을 왜 바꿨는지 한 줄" ...]}`,
     },
-  ], { temperature: 0.6, maxTokens: 6000 });
+  ], { temperature: 0.6, maxTokens: 6000, onFallback: fallbackLogger("concept", trace) });
   const repaired = normalizeConcepts(out.repairedCandidates, parsed?.gender);
   const summary = Array.isArray(out.repairSummary) ? out.repairSummary.map(String) : [];
   return { repaired: repaired.length === candidates.length ? repaired : candidates, summary };

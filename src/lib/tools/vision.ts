@@ -1,4 +1,6 @@
-import { chatJson, VISION_MODEL } from "@/lib/nim";
+import { chatJson, VISION_FALLBACK_MODEL, VISION_MODEL } from "@/lib/nim";
+import type { TraceEvent } from "@/lib/log";
+import { fallbackLogger } from "@/lib/log";
 
 export type Critique = { matches: boolean; mismatches: string[] };
 
@@ -6,7 +8,7 @@ export type Critique = { matches: boolean; mismatches: string[] };
  * 룩북 이미지 검증 도구 — VLM NIM.
  * 색상/모델 성별·체형/핵심 아이템의 명백한 불일치만 잡는다 (원단은 사진으로 판별 불가).
  */
-export async function critiqueLookbook(imageDataUrl: string, concept: Record<string, unknown>): Promise<Critique> {
+export async function critiqueLookbook(imageDataUrl: string, concept: Record<string, unknown>, trace?: TraceEvent[]): Promise<Critique> {
   const result = await chatJson<Partial<Critique>>(VISION_MODEL, [
     {
       role: "user",
@@ -27,7 +29,7 @@ targetCustomer (모델의 성별/체형 인상이 반드시 일치해야 함): $
         { type: "image_url", image_url: { url: imageDataUrl } },
       ],
     },
-  ], { temperature: 0.1, maxTokens: 1024 });
+  ], { temperature: 0.1, maxTokens: 1024, fallbackModel: VISION_FALLBACK_MODEL, onFallback: fallbackLogger("lookbook", trace) });
   return {
     matches: Boolean(result.matches),
     mismatches: Array.isArray(result.mismatches) ? result.mismatches.map(String) : [],

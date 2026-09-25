@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { chatJson, JUDGE_MODEL } from "@/lib/nim";
 import { normalizeCategory, retrieveProducts, type RetrievedItem } from "@/lib/tools/catalog";
-import { agentLog, type TraceEvent } from "@/lib/log";
+import { agentLog, fallbackLogger, type TraceEvent } from "@/lib/log";
 
 /**
  * 상품 매칭 — 웹검색 대신 카탈로그 RAG.
@@ -35,7 +35,7 @@ ${JSON.stringify(outfitItems)}
 category 는 상의|아우터|하의|신발|가방|악세사리|모자 중 하나.
 출력: {"queries": [{"item": 원문, "category": "...", "query": "..."}]}`,
       },
-    ], { temperature: 0.1, maxTokens: 1500 });
+    ], { temperature: 0.1, maxTokens: 1500, onFallback: fallbackLogger("shopping", trace) });
 
     const queries: QueryPlan[] = Array.isArray(planned.queries) && planned.queries.length
       ? planned.queries
@@ -65,7 +65,7 @@ ${JSON.stringify(results.map(({ q, hits }) => ({ item: q.item, candidates: hits.
 출력: {"picks": [{"item": 원문, "id": 선택한 상품 id, "reason": "한국어 한 줄"}]}
 후보가 없는 아이템은 생략.`,
       },
-    ], { temperature: 0.1, maxTokens: 1500 });
+    ], { temperature: 0.1, maxTokens: 1500, onFallback: fallbackLogger("shopping", trace) });
 
     const links: ShoppingLink[] = [];
     for (const { q, hits } of results) {

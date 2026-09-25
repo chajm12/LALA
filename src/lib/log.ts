@@ -26,3 +26,9 @@ export function agentLog(scope: Scope, message: string, tool?: string, trace?: T
   console.log(`${DIM}[${time}]${RESET} ${color}[${scope.toUpperCase()}]${RESET} ${message}${toolTag}`);
   trace?.push({ t: Date.now(), scope, message, tool });
 }
+
+/** chat() 의 onFallback 훅에 바로 꽂을 수 있는 로거 */
+export function fallbackLogger(scope: Scope, trace?: TraceEvent[]) {
+  return (from: string, to: string, reason: string) =>
+    agentLog(scope, `⚠ ${from} 응답 지연/오류 → ${to} 로 대체 (${reason.slice(0, 80)})`, "fallback", trace);
+}

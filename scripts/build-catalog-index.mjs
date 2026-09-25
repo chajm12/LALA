@@ -166,21 +166,21 @@ console.log(`스키마: ${schema}, 원본 행: ${rows.length}`);
 let items = rows.map(convert).filter(Boolean).filter((it) => it.name && it.category);
 if (genderFilter !== "all") items = items.filter((it) => it.gender === genderFilter || it.gender === "공용");
 
-// 카테고리 균형 샘플링: 한 카테고리가 인덱스를 독점하지 않도록 라운드로빈
+// 카테고리 가중 샘플링: 코디의 뼈대인 상의/하의/아우터/신발에 비중을 두고 나머지는 소량
+const WEIGHTS = { "상의": 4, "하의": 3, "아우터": 4, "신발": 4, "가방": 1.5, "악세사리": 1, "모자": 0.5, "원피스": 0.5 };
 const byCat = new Map();
 for (const it of items) { if (!byCat.has(it.category)) byCat.set(it.category, []); byCat.get(it.category).push(it); }
 for (const arr of byCat.values()) arr.sort(() => Math.random() - 0.5);
+const totalW = [...byCat.keys()].reduce((a, k) => a + (WEIGHTS[k] ?? 1), 0);
 const picked = [];
-while (picked.length < limit && [...byCat.values()].some((a) => a.length)) {
-  for (const arr of byCat.values()) { if (arr.length && picked.length < limit) picked.push(arr.pop()); }
-}
+for (const [k, arr] of byCat) picked.push(...arr.slice(0, Math.round(limit * (WEIGHTS[k] ?? 1) / totalW)));
 console.log(`선택: ${picked.length}개`, Object.fromEntries([...byCat.keys()].map((k) => [k, picked.filter((p) => p.category === k).length])));
 
 const vectors = [];
 const BATCH = 64;
 for (let i = 0; i < picked.length; i += BATCH) {
   const chunk = picked.slice(i, i + BATCH);
-  vectors.push(...(await embedBatch(chunk.map(passageText))));
+  vectors.push(...(await embedBatch(chunk.map(passageText))).map((v) => v.map((x) => Math.round(x * 1e4) / 1e4)));
   process.stdout.write(`\r임베딩 ${Math.min(i + BATCH, picked.length)}/${picked.length}`);
 }
 console.log();

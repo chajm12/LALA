@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { generateImage } from "@/lib/tools/image";
 import { critiqueLookbook } from "@/lib/tools/vision";
-import { VISION_MODEL } from "@/lib/nim";
-import { agentLog, type TraceEvent } from "@/lib/log";
+import { chatJson, JUDGE_MODEL, VISION_MODEL } from "@/lib/nim";
+import { agentLog, fallbackLogger, type TraceEvent } from "@/lib/log";
 
 /** 이미지 생성 → VLM 검증 → 불일치 시 프롬프트 보강 후 재생성 (최대 MAX_RETRIES 회) */
 const MAX_RETRIES = 1;
@@ -26,15 +26,34 @@ function parseHeightWeight(text: string) {
   return `${heightCm}cm, ${weightKg}kg, BMI about ${bmi.toFixed(1)}: ${heightDescription}; ${build}.`;
 }
 
-function buildPrompt(concept: Record<string, unknown>, extra?: string) {
-  const materials = Array.isArray(concept.materials) ? concept.materials.join(", ") : "";
-  const colors = Array.isArray(concept.colorPalette) ? concept.colorPalette.join(", ") : "";
-  const items = Array.isArray(concept.outfitItems) ? concept.outfitItems.join(", ") : "";
-  const target = String(concept.targetCustomer ?? "");
-  const bodyProfile = String(concept.bodyProfile ?? "");
-  const parsed = parseHeightWeight([target, bodyProfile, String(concept.description ?? ""), String(concept.fitStrategy ?? "")].join(" "));
-  const gender = /여성|women|female/i.test(target) ? "female" : "male";
-  return `Editorial fashion lookbook photo, full body, studio lighting, neutral background. A ${gender} model with ${parsed ?? "an average realistic build"} ${bodyProfile}. Represent the body realistically according to the height and weight; do not make the model runway-proportioned. Outfit: ${items || concept.description}. Fit: ${concept.fitStrategy ?? ""}. Mood: ${concept.mood}. Colors: ${colors}. Fabrics: ${materials}. Natural pose, realistic clothing, show from top of head to shoes with margin, do not crop head or feet.${extra ? ` ${extra}` : ""}`;
+function bodyDescription(concept: Record<string, unknown>) {
+  const parsed = parseHeightWeight([concept.targetCustomer, concept.bodyProfile, concept.description, concept.fitStrategy].map(String).join(" "));
+  const gender = /여성|women|female/i.test(String(concept.targetCustomer ?? "")) ? "female" : "male";
+  return `${gender} model, ${parsed ?? "average realistic build"}`;
+}
+
+/**
+ * FLUX 는 한국어(특히 신체 부위 표현)가 섞이면 CONTENT_FILTERED 로 검은 이미지를 돌려준다.
+ * 그래서 LLM 으로 짧은 영어 프롬프트를 먼저 만들고, 실패 시 아이템 목록만 담은 최소 프롬프트로 재시도한다.
+ */
+async function composeImagePrompt(concept: Record<string, unknown>, trace: TraceEvent[]) {
+  agentLog("lookbook", "룩 스펙을 영어 이미지 프롬프트로 변환", `chat.completions · ${JUDGE_MODEL}`, trace);
+  const out = await chatJson<{ prompt?: string; outfit?: string }>(JUDGE_MODEL, [
+    { role: "system", content: "You write concise, safe, English-only prompts for a fashion image generator. Output JSON only." },
+    {
+      role: "user",
+      content: `Outfit spec (Korean): ${JSON.stringify({ outfitItems: concept.outfitItems, colorPalette: concept.colorPalette, materials: concept.materials, mood: concept.mood, fitStrategy: concept.fitStrategy })}
+
+Return {"outfit": "<comma-separated English list of the garments with color/material/fit, max 40 words>", "prompt": "<one paragraph, max 80 words, English only: editorial full-body lookbook photo, ${bodyDescription(concept)}, the outfit, fit/silhouette, mood, studio lighting, neutral background. No body-part anatomy words, no brand names.>"}`,
+    },
+  ], { temperature: 0.2, maxTokens: 500, onFallback: fallbackLogger("lookbook", trace) });
+  const outfit = String(out.outfit ?? (Array.isArray(concept.outfitItems) ? concept.outfitItems.join(", ") : ""));
+  const prompt = String(out.prompt ?? "").trim() || minimalPrompt(concept, outfit);
+  return { prompt, outfit };
+}
+
+function minimalPrompt(concept: Record<string, unknown>, outfit: string) {
+  return `Editorial fashion lookbook photo, full body, ${bodyDescription(concept)}, wearing ${outfit}. Studio lighting, neutral background, natural pose, head to shoes visible.`;
 }
 
 export async function POST(req: Request) {
@@ -42,11 +61,12 @@ export async function POST(req: Request) {
   try {
     const { concept } = await req.json();
 
+    const { prompt, outfit } = await composeImagePrompt(concept, trace);
     agentLog("lookbook", "룩북 이미지 생성 (1차)", "tool:generate_image", trace);
-    let gen = await generateImage(buildPrompt(concept));
+    let gen = await generateImage(prompt);
     if (!gen.imageUrl && gen.error) {
-      agentLog("lookbook", `✗ 생성 실패: ${gen.error} → 안전한 프롬프트로 1회 재시도`, "tool:generate_image", trace);
-      gen = await generateImage(`${buildPrompt(concept)} Tasteful, fully clothed, professional catalog photography.`);
+      agentLog("lookbook", `✗ 생성 실패: ${gen.error} → 최소 프롬프트로 1회 재시도`, "tool:generate_image", trace);
+      gen = await generateImage(minimalPrompt(concept, outfit));
     }
 
     let imageUrl = gen.imageUrl;
@@ -57,7 +77,7 @@ export async function POST(req: Request) {
     for (let i = 0; imageUrl && i <= MAX_RETRIES; i++) {
       agentLog("lookbook", "VLM 으로 이미지-스펙 정합성 검증", `chat.completions (vision) · ${VISION_MODEL}`, trace);
       try {
-        const critique = await critiqueLookbook(imageUrl, concept);
+        const critique = await critiqueLookbook(imageUrl, concept, trace);
         verified = critique.matches;
         mismatches = critique.mismatches;
       } catch (e) {
@@ -68,8 +88,9 @@ export async function POST(req: Request) {
       if (i === MAX_RETRIES) { agentLog("lookbook", `⚠ 불일치 남음: ${mismatches.join(", ")}`, undefined, trace); break; }
 
       agentLog("lookbook", `⚠ 불일치: ${mismatches.join(", ")} → 프롬프트 보강 후 재생성`, "tool:generate_image", trace);
-      const retry = await generateImage(buildPrompt(concept, `Make sure to clearly include: ${mismatches.join("; ")}.`));
+      const retry = await generateImage(`${prompt} Make sure the outfit clearly shows: ${outfit}.`);
       if (retry.imageUrl) imageUrl = retry.imageUrl;
+      else agentLog("lookbook", `✗ 재생성 실패: ${retry.error} (1차 이미지 유지)`, undefined, trace);
       retried = true;
     }
 

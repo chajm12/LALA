@@ -44,7 +44,9 @@ async function viaNvidia(prompt: string, size: number): Promise<GenerateResult> 
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`NVIDIA 이미지 생성 실패 (${res.status}): ${(await res.text()).slice(0, 300)}`);
-  const json = (await res.json()) as unknown;
+  const json = (await res.json()) as { artifacts?: { finishReason?: string }[] };
+  const finish = json.artifacts?.[0]?.finishReason;
+  if (finish && finish !== "SUCCESS") throw new Error(`이미지 생성 거부됨: ${finish}`); // CONTENT_FILTERED → 검은 이미지가 오므로 실패로 처리
   const b64 = findBase64Image(json);
   if (!b64) throw new Error("응답에서 이미지 데이터를 찾지 못했어요");
   return { imageUrl: b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`, error: null, provider: "nvidia" };

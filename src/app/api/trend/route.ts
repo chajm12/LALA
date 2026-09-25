@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { chat, chatJson, JUDGE_MODEL, PLANNER_MODEL } from "@/lib/nim";
 import { getWeather, type WeatherReport } from "@/lib/tools/weather";
 import { catalogSummary } from "@/lib/tools/catalog";
-import { agentLog, type TraceEvent } from "@/lib/log";
+import { agentLog, fallbackLogger, type TraceEvent } from "@/lib/log";
 import type { ParsedRequest } from "@/lib/styling";
 
 /**
@@ -40,7 +40,7 @@ async function parseRequest(keyword: string, trace: TraceEvent[]): Promise<Parse
   "focusCategories": ["사용자가 특별히 추천을 요구한 품목 카테고리 (예: 신발)"]
 }`,
     },
-  ], { temperature: 0.1, maxTokens: 800 });
+  ], { temperature: 0.1, maxTokens: 800, onFallback: fallbackLogger("trend", trace) });
 
   const date = typeof raw.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.date) ? raw.date : nextSaturday();
   return {
@@ -107,7 +107,7 @@ ${catalog}
 - 사용자 제약(${parsed.constraints.join(", ") || "없음"})을 지키기 위한 주의점
 - 상황과 안 맞는 실패 가능성 (예: 결혼식에 캐주얼)`,
       },
-    ], { temperature: 0.5, maxTokens: 2000 });
+    ], { temperature: 0.5, maxTokens: 2000, onFallback: fallbackLogger("trend", trace) });
 
     agentLog("trend", `분석 완료 (${trend.length}자)`, undefined, trace);
     return NextResponse.json({ trend, parsed, weather, trace });
