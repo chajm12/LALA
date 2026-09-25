@@ -503,7 +503,7 @@ export default function Home() {
         lookbookVerified: Boolean(look.lookbook?.verified),
         lookbookMismatches: look.lookbook?.mismatches ?? [],
         lookbookRetried: Boolean(look.lookbook?.retried),
-        lookbookError: look.lookbook?.error ?? null,
+        lookbookError: look.lookbook?.error ?? (finished && !look.lookbook?.imageUrl ? "이미지가 생성되지 않았어요. 대화창에서 \"이미지 다시 만들어줘\"라고 요청해 보세요." : null),
         finalMaterials: null,
         shoppingLinks: look.links ?? [],
         shoppingError: look.links

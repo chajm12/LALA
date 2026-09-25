@@ -25,7 +25,10 @@ const SYSTEM_PROMPT = `너는 패션 이커머스의 퍼스널 스타일링 에�
   · 실내 행사이거나 사용자가 날씨는 무관하다고 하면 get_weather 를 건너뛰고 그 이유를 analyze_style 의 extra_context 에 적는다.
   · 사용자가 특정 품목(예: 로퍼)을 요구하면 search_catalog 로 재고를 확인하고, 없으면 대안을 analyze_style 에 반영한다.
   · 카탈로그에 없는 카테고리는 후보에 넣지 않도록 analyze_style 에 반영한다.
-- 후속 요청(이미 looks 가 있는 상태)에서는 전체를 다시 돌리지 말고 필요한 것만 한다: 특정 룩의 아이템 변경 → revise_look → render_lookbook → match_products → finish. 날짜/장소가 바뀌면 parse_request 와 get_weather 부터 다시.
+- 후속 요청(이미 looks 가 있는 상태)은 요청의 크기를 먼저 판단한다:
+  · 아이템 단위 변경("신발을 로퍼로", "재킷 색을 네이비로") → 해당 룩만 revise_look → render_lookbook → match_products → finish.
+  · 방향 변경("더 캐주얼하게", "포멀하게", "톤을 어둡게", "스트리트 무드로", "예산 낮게") → 후보 자체가 달라져야 하므로 parse_request(원 요청 + 변경 사항) → analyze_style(extra_context 에 변경 방향과 "이전 최종안과 다른 방향" 명시) → run_styling_loop(새 후보 5개) → 최종 2안 render_lookbook·match_products → finish. revise_look 으로 때우지 않는다.
+  · 날짜/장소 변경 → parse_request 와 get_weather 부터 다시 하고, 날씨가 크게 달라졌으면 방향 변경과 같이 처리한다.
 - ask_user 는 정말 진행이 불가능할 때만, 대화당 1번. 성별·날짜·장소가 없으면 기본값(남성, 다음 주말, 서울)으로 진행한다.
 - 한 턴에 독립적인 도구(예: 두 룩의 render_lookbook)는 동시에 여러 개 호출해도 된다.
 - 반드시 finish 로 끝낸다. summary 에는 결과와 함께 "어떤 판단을 했는지"(예: 강수확률이 낮아 스웨이드 허용, 카탈로그에 코트가 없어 재킷 위주)를 한국어로 적는다.
@@ -96,6 +99,24 @@ export async function runAgent(
   ];
 
   agentLog("agent", incomingState ? "후속 요청 처리 시작 (기존 상태 이어서)" : "에이전트 시작: 목표를 받고 도구 계획 수립", `chat.completions · ${PLANNER_MODEL}`, trace);
+  const ensureComplete = async () => {
+    // 완료 전 완결성 보장: 최종 룩에 이미지/매칭이 빠져 있으면 플래너가 건너뛰었더라도 채운다
+    const missing = state.finalIds
+      .map((id) => state.looks[id])
+      .filter((l): l is NonNullable<typeof l> => Boolean(l))
+      .filter((l) => !l.lookbook?.imageUrl || !l.links);
+    if (missing.length) {
+      agentLog("agent", `완료 전 점검: ${missing.map((l) => l.concept.name).join(", ")} 에 이미지/매칭이 빠져 자동 보완`, undefined, trace);
+      await Promise.all(
+        missing.map(async (l) => {
+          const id = l.concept.id;
+          if (!l.lookbook?.imageUrl) await executeTool("render_lookbook", { concept_id: id }, { state, trace, emitState }).catch((e) => agentLog("agent", `✗ 자동 렌더 실패: ${String(e).slice(0, 100)}`, undefined, trace));
+          if (!l.links) await executeTool("match_products", { concept_id: id }, { state, trace, emitState }).catch((e) => agentLog("agent", `✗ 자동 매칭 실패: ${String(e).slice(0, 100)}`, undefined, trace));
+        }),
+      );
+    }
+  };
+
   let asked = false;
   let toolsExecuted = 0;
   let nudges = 0;
@@ -120,6 +141,7 @@ export async function runAgent(
         continue;
       }
       agentLog("agent", `플래너가 도구 없이 응답 → 종료 처리`, `chat.completions · ${model}`, trace);
+      await ensureComplete();
       emit({ type: "assistant", text: text || "작업을 마쳤어요." });
       emit({ type: "done", state: serializeState(state) });
       return state;
@@ -143,6 +165,7 @@ export async function runAgent(
         emit({ type: "done", state: serializeState(state) });
         return state;
       }
+      await ensureComplete();
       const summary = String(args.summary ?? "작업을 마쳤어요.");
       agentLog("agent", `완료: ${summary.slice(0, 80)}`, undefined, trace);
       emit({ type: "assistant", text: summary });

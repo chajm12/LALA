@@ -153,7 +153,12 @@ export async function executeTool(name: string, args: Args, ctx: ToolContext): P
     }
     case "run_styling_loop": {
       if (!state.trend) return "오류: analyze_style 을 먼저 호출해 분석문을 만들어야 한다.";
-      const plan = await runStylingLoop(state.keyword, state.trend, state.parsed, trace);
+      const previousFinals = state.finalIds.map((id) => state.looks[id]?.concept).filter(Boolean);
+      const trendForLoop = previousFinals.length
+        ? `${state.trend}\n\n[후속 요청 주의] 이전 최종안(${previousFinals.map((c) => `${c!.name}: ${c!.mood}`).join(" / ")})과 무드·아이템 구성이 명확히 달라야 한다. 사용자의 변경 요청: ${state.keyword.split("/ 후속:").slice(1).join(" / ").trim() || "방향 변경"}`
+        : state.trend;
+      if (previousFinals.length) agentLog("concept", `후속 방향 변경: 이전 최종안과 다른 방향으로 후보 재생성`, undefined, trace);
+      const plan = await runStylingLoop(state.keyword, trendForLoop, state.parsed, trace);
       state.plan = plan;
       state.finalIds = plan.finalConcepts.map((c) => c.id);
       state.looks = {};
