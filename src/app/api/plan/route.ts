@@ -1,260 +1,177 @@
 import { NextResponse } from "next/server";
+import { chatJson, JUDGE_MODEL, PLANNER_MODEL } from "@/lib/nim";
+import { agentLog, type TraceEvent } from "@/lib/log";
 import {
-  OPENAI_SERVICE_TIER,
-  PLAN_MODEL,
-  openai,
-  parseJsonObjectFromText,
-} from "@/lib/openai";
-import { agentLog } from "@/lib/log";
+  applyFinalDecisions,
+  normalizeConcepts,
+  normalizeEvaluations,
+  rankEvaluations,
+  type Concept,
+  type Evaluation,
+  type ParsedRequest,
+} from "@/lib/styling";
 
-type Concept = {
-  id: string;
-  name: string;
-  description: string;
-  mood: string;
-  colorPalette: string[];
-  targetCustomer: string;
-  materials: string[];
-  outfitItems: string[];
-  bodyProfile: string;
-  fitStrategy: string;
-  stylingReason: string;
-};
+/**
+ * 생성(PLANNER) → 평가(JUDGE, 별도 모델) → 수정(PLANNER) → 재평가 … 를 실제로 반복하는 루프.
+ *
+ * - 한 프롬프트에 "평가한 척" 하지 않는다. 생성자와 평가자는 다른 모델·다른 호출이다.
+ * - 종료 조건: 모든 후보 총점 ≥ PASS_SCORE 이거나 MAX_ROUNDS 도달.
+ * - 프론트 계약(originalCandidates/round1/repairSummary/repairedCandidates/round2/finalConcepts)은 유지하고
+ *   rounds(전체 이력)·iterations·trace 를 추가로 돌려준다.
+ */
+const MAX_ROUNDS = Number(process.env.PLAN_MAX_ROUNDS ?? 3);
+const PASS_SCORE = Number(process.env.PLAN_PASS_SCORE ?? 82);
 
-type Evaluation = {
-  id: string;
-  name: string;
-  weatherScore: number;
-  placeScore: number;
-  bodyFitScore: number;
-  trendScore: number;
-  practicalityScore: number;
-  totalScore: number;
-  failureReasons: string[];
-  revisionPlan: string[];
-  rank?: number;
-  decisionStatus?: "선택" | "탈락";
-  decisionReason?: string;
-};
+const CONCEPT_SCHEMA = `Concept 필드:
+id("look_01" 형식, 수정 시에도 id 유지), name, description, mood, colorPalette(string[]), targetCustomer, materials(string[]),
+outfitItems(string[] — "카테고리: 아이템" 형식, 예: "상의(이너): 화이트 코튼 티셔츠", "상의(아우터): 네이비 블레이저", "하의: 차콜 와이드 슬랙스", "신발: 블랙 레더 로퍼"),
+bodyProfile(키·몸무게 원 숫자 포함), fitStrategy, stylingReason`;
 
-function asArray<T>(value: unknown): T[] {
-  return Array.isArray(value) ? (value as T[]) : [];
+async function generateCandidates(keyword: string, trend: string, parsed: ParsedRequest | null, trace: TraceEvent[]) {
+  agentLog("concept", "무드/핏/소재가 서로 다른 착장 후보 5개 생성", `chat.completions · ${PLANNER_MODEL}`, trace);
+  const out = await chatJson<{ candidates: unknown }>(PLANNER_MODEL, [
+    { role: "system", content: "너는 퍼스널 스타일리스트다. 모든 텍스트는 한국어. JSON 만 출력." },
+    {
+      role: "user",
+      content: `사용자 요청: ${keyword}
+구조화 해석: ${JSON.stringify(parsed)}
+분석 결과:
+${trend}
+
+규칙:
+- 서로 다른 무드/핏/아이템 조합의 착장 후보를 정확히 5개 생성 (색만 다른 수준 금지).
+- 성별 기본값 남성. 날씨 수치·장소 무드·상황 포멀리티를 반드시 반영.
+- 키/몸무게가 있으면 bodyProfile 에 원 숫자를 그대로 쓰고 현실적인 체형 인상을 적는다.
+- outfitItems 에는 룩북에 착용될 모든 아이템을 카테고리와 함께 빠짐없이.
+- 사용자 제약(${parsed?.constraints.join(", ") || "없음"})을 위반하지 않는다.
+
+${CONCEPT_SCHEMA}
+
+출력: {"candidates": Concept[]}`,
+    },
+  ], { temperature: 0.8, maxTokens: 6000 });
+  return normalizeConcepts(out.candidates, parsed?.gender);
 }
 
-function toNumber(value: unknown, fallback = 0) {
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) ? Math.round(number) : fallback;
+async function judgeCandidates(candidates: Concept[], keyword: string, trend: string, parsed: ParsedRequest | null, round: number, trace: TraceEvent[]) {
+  agentLog("evaluate", `${round}차 평가: 날씨·장소·체형/핏·트렌드·실용성 5개 축 채점`, `chat.completions · ${JUDGE_MODEL}`, trace);
+  const out = await chatJson<{ evaluations: unknown }>(JUDGE_MODEL, [
+    {
+      role: "system",
+      content: "너는 까다로운 QA 평가자다. 생성자와 다른 모델이며 후보를 옹호하지 않는다. 문제가 없어 보여도 개선점을 찾는다. 한국어, JSON 만 출력.",
+    },
+    {
+      role: "user",
+      content: `사용자 요청: ${keyword}
+구조화 해석: ${JSON.stringify(parsed)}
+분석 결과(날씨 수치 포함):
+${trend}
+
+평가할 후보:
+${JSON.stringify(candidates)}
+
+채점 규칙:
+- weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore 각 0~100 정수. 0 을 기본값으로 쓰지 않는다.
+- 날씨 수치와 명백히 충돌(비 오는데 스웨이드, 30도인데 울 코트)하면 weatherScore 60 이하.
+- 상황 포멀리티 불일치(결혼식에 반바지)면 placeScore 50 이하.
+- 사용자 제약 위반이면 practicalityScore 50 이하.
+- failureReasons: 후보별 2~3개, "무엇이 왜 문제"인지 구체적으로.
+- revisionPlan: 바꿔야 할 아이템/소재/색/기장/핏을 명령형으로.
+- decisionReason: 한 줄 총평.
+
+출력: {"evaluations": [{id, name, weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore, failureReasons[], revisionPlan[], decisionReason}]}`,
+    },
+  ], { temperature: 0.2, maxTokens: 5000 });
+  return normalizeEvaluations(out.evaluations, candidates);
 }
 
-function toStringArray(value: unknown) {
-  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
-  if (typeof value === "string" && value.trim()) return [value];
-  return [];
-}
+async function repairCandidates(candidates: Concept[], evaluations: Evaluation[], parsed: ParsedRequest | null, round: number, trace: TraceEvent[]) {
+  const failing = evaluations.filter((e) => e.totalScore < PASS_SCORE).map((e) => e.name);
+  agentLog("concept", `${round}차 수정: 기준 미달 ${failing.length}개 (${failing.join(", ")}) 평가 피드백 반영`, `chat.completions · ${PLANNER_MODEL}`, trace);
+  const out = await chatJson<{ repairedCandidates: unknown; repairSummary: unknown }>(PLANNER_MODEL, [
+    { role: "system", content: "너는 퍼스널 스타일리스트다. 평가자의 피드백을 반영해 후보를 수정한다. 한국어, JSON 만 출력." },
+    {
+      role: "user",
+      content: `후보:
+${JSON.stringify(candidates)}
 
-function normalizeConcepts(value: unknown) {
-  return asArray<Record<string, unknown>>(value)
-    .slice(0, 5)
-    .map((item, index): Concept => ({
-      id: String(item.id ?? `look_${String(index + 1).padStart(2, "0")}`),
-      name: String(item.name ?? `후보 ${index + 1}`),
-      description: String(item.description ?? ""),
-      mood: String(item.mood ?? ""),
-      colorPalette: toStringArray(item.colorPalette),
-      targetCustomer: String(item.targetCustomer ?? "남성"),
-      materials: toStringArray(item.materials),
-      outfitItems: toStringArray(item.outfitItems),
-      bodyProfile: String(item.bodyProfile ?? ""),
-      fitStrategy: String(item.fitStrategy ?? ""),
-      stylingReason: String(item.stylingReason ?? ""),
-    }));
-}
+평가자 피드백 (failureReasons / revisionPlan 을 반드시 반영):
+${JSON.stringify(evaluations.map(({ id, name, totalScore, failureReasons, revisionPlan }) => ({ id, name, totalScore, failureReasons, revisionPlan })))}
 
-function normalizeEvaluations(value: unknown, concepts: Concept[]) {
-  const conceptsById = new Map(concepts.map((concept) => [concept.id, concept]));
-  const conceptsByName = new Map(concepts.map((concept) => [concept.name, concept]));
+규칙:
+- 5개 모두 돌려주되 id 는 유지. 총점 ${PASS_SCORE} 이상인 후보는 최소 수정, 미달 후보는 revisionPlan 을 실제 아이템 교체로 반영.
+- 후보 간 다양성(무드/핏/소재 차이)은 유지.
+- 사용자 제약(${parsed?.constraints.join(", ") || "없음"}) 준수.
 
-  return asArray<Record<string, unknown>>(value).map((item, index): Evaluation => {
-    const matchedConcept =
-      conceptsById.get(String(item.id ?? "")) ??
-      conceptsByName.get(String(item.name ?? "")) ??
-      concepts[index];
-    const criteria = item.criteria && typeof item.criteria === "object"
-      ? (item.criteria as Record<string, unknown>)
-      : {};
-    const weatherScore = toNumber(item.weatherScore ?? criteria.weatherScore ?? criteria.weather);
-    const placeScore = toNumber(item.placeScore ?? criteria.placeScore ?? criteria.place);
-    const bodyFitScore = toNumber(item.bodyFitScore ?? criteria.bodyFitScore ?? criteria.bodyFit);
-    const trendScore = toNumber(item.trendScore ?? criteria.trendScore ?? criteria.trend);
-    const practicalityScore = toNumber(
-      item.practicalityScore ?? criteria.practicalityScore ?? criteria.practicality,
-    );
-    const computedTotal = Math.round(
-      (weatherScore + placeScore + bodyFitScore + trendScore + practicalityScore) / 5,
-    );
+${CONCEPT_SCHEMA}
 
-    return {
-      id: matchedConcept?.id ?? String(item.id ?? `look_${String(index + 1).padStart(2, "0")}`),
-      name: matchedConcept?.name ?? String(item.name ?? `후보 ${index + 1}`),
-      weatherScore,
-      placeScore,
-      bodyFitScore,
-      trendScore,
-      practicalityScore,
-      totalScore: toNumber(item.totalScore, computedTotal),
-      failureReasons: toStringArray(item.failureReasons),
-      revisionPlan: toStringArray(item.revisionPlan),
-      rank: item.rank === undefined ? undefined : toNumber(item.rank),
-      decisionStatus: item.decisionStatus === "선택" ? "선택" : item.decisionStatus === "탈락" ? "탈락" : undefined,
-      decisionReason: typeof item.decisionReason === "string" ? item.decisionReason : undefined,
-    };
-  });
-}
-
-function selectFallbackFinal(concepts: Concept[], evaluations: Evaluation[]) {
-  const scoreById = new Map(evaluations.map((item) => [item.id, item.totalScore]));
-  return [...concepts]
-    .sort((a, b) => (scoreById.get(b.id) ?? 0) - (scoreById.get(a.id) ?? 0))
-    .slice(0, 2);
-}
-
-function rankEvaluations(evaluations: Evaluation[]) {
-  return [...evaluations]
-    .sort((a, b) => {
-      if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
-      if (b.trendScore !== a.trendScore) return b.trendScore - a.trendScore;
-      if (b.bodyFitScore !== a.bodyFitScore) return b.bodyFitScore - a.bodyFitScore;
-      if (b.weatherScore !== a.weatherScore) return b.weatherScore - a.weatherScore;
-      return a.name.localeCompare(b.name, "ko");
-    })
-    .map((item, index) => ({
-      ...item,
-      rank: index + 1,
-    }));
-}
-
-function rankRound1Evaluations(evaluations: Evaluation[]) {
-  return rankEvaluations(evaluations).map((item) => ({
-    ...item,
-    decisionStatus: undefined,
-    decisionReason: undefined,
-  }));
-}
-
-function applyFinalDecisions(evaluations: Evaluation[], finalConcepts: Concept[]) {
-  const finalIds = new Set(finalConcepts.map((concept) => concept.id));
-  return rankEvaluations(evaluations).map((item) => {
-    const selected = finalIds.has(item.id);
-    const fallbackDecision = selected
-      ? `${item.rank}위, 재평가 총점 ${item.totalScore}점으로 상위 2개 안에 들어 최종 룩북 후보로 선택됐어요.`
-      : `${item.rank}위, 재평가 총점 ${item.totalScore}점으로 상위 2개보다 낮아 최종 룩북에서는 제외됐어요.`;
-    return {
-      ...item,
-      decisionStatus: selected ? "선택" : "탈락",
-      decisionReason: item.decisionReason?.trim()
-        ? `${item.rank}위 · ${item.decisionReason}`
-        : fallbackDecision,
-    } satisfies Evaluation;
-  });
+출력: {"repairedCandidates": Concept[], "repairSummary": ["후보명: 무엇을 왜 바꿨는지 한 줄" ...]}`,
+    },
+  ], { temperature: 0.6, maxTokens: 6000 });
+  const repaired = normalizeConcepts(out.repairedCandidates, parsed?.gender);
+  const summary = Array.isArray(out.repairSummary) ? out.repairSummary.map(String) : [];
+  return { repaired: repaired.length === candidates.length ? repaired : candidates, summary };
 }
 
 export async function POST(req: Request) {
+  const trace: TraceEvent[] = [];
   try {
-    const { keyword, trend } = await req.json();
+    const { keyword, trend, parsed = null } = (await req.json()) as { keyword: string; trend: string; parsed?: ParsedRequest | null };
 
-    agentLog(
-      "concept",
-      `"${keyword}" 통합 후보 생성·평가·수정·재평가 시작`,
-      `responses.create · ${PLAN_MODEL} · ${OPENAI_SERVICE_TIER}`,
-    );
+    agentLog("agent", `계획 루프 시작 (통과 기준 ${PASS_SCORE}점, 최대 ${MAX_ROUNDS}라운드)`, undefined, trace);
 
-    const response = await openai.responses.create({
-      model: PLAN_MODEL,
-      service_tier: OPENAI_SERVICE_TIER,
-      input: `너는 소비자 개인화 퍼스널 스타일링 에이전트이자 QA 평가자야.
-사용자 요청과 트렌드/날씨/장소 분석을 바탕으로 아래 전체 과정을 한 번에 수행해.
+    const originalCandidates = await generateCandidates(keyword, trend, parsed, trace);
+    if (originalCandidates.length < 5) throw new Error("후보 생성에 실패했어요 (5개 미만).");
 
-과정:
-1. 서로 다른 무드/핏/아이템 조합의 착장 후보를 정확히 5개 생성한다.
-2. 5개 후보를 1차 평가한다.
-3. 실패 원인을 바탕으로 후보 5개를 모두 수정한다.
-4. 수정 후보를 재평가한다.
-5. 재평가 총점 기준 최종 룩북 2안을 선택한다.
+    let candidates = originalCandidates;
+    const rounds: { round: number; evaluations: Evaluation[]; repairSummary: string[]; minScore: number; passed: boolean }[] = [];
+    const repairSummaryAll: string[] = [];
+    let round1: Evaluation[] = [];
+    let lastEval: Evaluation[] = [];
 
-생성 규칙:
-- 모든 출력 텍스트는 반드시 한국어.
-- 사용자가 성별을 말하지 않았다면 남성 코디가 기본값.
-- 날짜와 장소의 날씨/계절감, 장소 무드, 상황의 포멀리티를 반영.
-- 키와 몸무게가 있으면 bodyProfile에 원 숫자(예: 175cm, 70kg)를 그대로 포함하고 현실적인 체형 인상을 적는다.
-- 핏은 체형 + 무드 + 트렌드 적합성을 함께 고려한다.
-- 원단(materials)은 원가 계산용이 아니라 옷 추천과 이미지 질감 표현용이다.
-- outfitItems에는 실제 착용한 모든 제품을 카테고리와 함께 최대한 구체적으로 넣는다.
-- 예: "모자: 블랙 볼캡", "상의(이너): 화이트 코튼 티셔츠", "상의(아우터): 네이비 세미오버 블레이저", "상의(레이어드): 라이트그레이 니트 베스트", "하의: 차콜 와이드 슬랙스", "신발: 블랙 레더 로퍼", "악세사리: 실버 체인 목걸이".
-- 없는 카테고리는 억지로 만들지 말되, 룩북 이미지에 착용될 아이템은 빠짐없이 포함한다.
-- 후보들은 색상만 다른 수준이 아니라 무드/아이템/핏/소재가 명확히 달라야 한다.
+    for (let round = 1; round <= MAX_ROUNDS; round++) {
+      const evaluations = rankEvaluations(await judgeCandidates(candidates, keyword, trend, parsed, round, trace));
+      if (round === 1) round1 = evaluations.map((e) => ({ ...e, decisionStatus: undefined, decisionReason: undefined }));
+      lastEval = evaluations;
 
-평가 규칙:
-- 점수 필드명은 weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore, totalScore.
-- 각 점수는 0~100 정수이며 0을 기본값으로 쓰지 않는다.
-- totalScore는 다섯 점수 평균에 가깝게 계산한다.
-- failureReasons에는 무엇이 왜 문제인지 후보별 2~3개 이상 구체적으로 쓴다.
-- revisionPlan에는 바꿔야 할 아이템/소재/색/기장/핏을 명확히 쓴다.
-- 재평가에는 rank, decisionStatus("선택"|"탈락"), decisionReason을 포함한다.
-- 선택된 2개는 왜 상위 2개인지, 탈락 후보는 어떤 기준에서 밀렸는지 점수와 이유를 포함한다.
+      const minScore = Math.min(...evaluations.map((e) => e.totalScore));
+      const passed = evaluations.every((e) => e.totalScore >= PASS_SCORE);
+      agentLog("evaluate", `${round}차 결과: 최저 ${minScore}점 / 최고 ${Math.max(...evaluations.map((e) => e.totalScore))}점 → ${passed ? "기준 통과" : "기준 미달"}`, undefined, trace);
 
-사용자 요청:
-${keyword}
+      if (passed || round === MAX_ROUNDS) {
+        rounds.push({ round, evaluations, repairSummary: [], minScore, passed });
+        if (!passed) agentLog("agent", `최대 라운드 도달, 현재 최고 후보로 진행`, undefined, trace);
+        break;
+      }
 
-트렌드/날씨/장소 분석:
-${trend}
-
-반드시 JSON만 반환해. 마크다운 금지.
-JSON 스키마:
-{
-  "originalCandidates": Concept[],
-  "round1": Evaluation[],
-  "repairSummary": string[],
-  "repairedCandidates": Concept[],
-  "round2": Evaluation[],
-  "finalConcepts": Concept[]
-}
-
-Concept 필드:
-id("look_01" 형식), name, description, mood, colorPalette(string[]), targetCustomer, materials(string[]), outfitItems(string[]), bodyProfile, fitStrategy, stylingReason
-
-Evaluation 필드:
-id, name, weatherScore, placeScore, bodyFitScore, trendScore, practicalityScore, totalScore, failureReasons(string[]), revisionPlan(string[]), rank, decisionStatus, decisionReason`,
-    });
-
-    const parsed = parseJsonObjectFromText(response.output_text) as Record<string, unknown>;
-    const originalCandidates = normalizeConcepts(parsed.originalCandidates);
-    const repairedCandidates = normalizeConcepts(parsed.repairedCandidates);
-    const candidateBase = repairedCandidates.length ? repairedCandidates : originalCandidates;
-    const round1 = rankRound1Evaluations(normalizeEvaluations(parsed.round1, originalCandidates));
-    const normalizedRound2 = normalizeEvaluations(parsed.round2, candidateBase);
-    const finalConcepts = selectFallbackFinal(candidateBase, normalizedRound2);
-    const round2 = applyFinalDecisions(normalizedRound2, finalConcepts);
-
-    if (originalCandidates.length < 5 || candidateBase.length < 5 || finalConcepts.length < 2) {
-      throw new Error("통합 스타일링 계획 생성에 실패했어요.");
+      const { repaired, summary } = await repairCandidates(candidates, evaluations, parsed, round, trace);
+      rounds.push({ round, evaluations, repairSummary: summary, minScore, passed });
+      repairSummaryAll.push(...summary.map((s) => `[${round}차] ${s}`));
+      candidates = repaired;
     }
 
-    agentLog(
-      "evaluate",
-      `통합 계획 완료: 최종 ${finalConcepts.map((item) => item.name).join(" / ")}`,
-    );
+    const finalIds = new Set(rankEvaluations(lastEval).slice(0, 2).map((e) => e.id));
+    const finalConcepts = candidates.filter((c) => finalIds.has(c.id));
+    const round2 = applyFinalDecisions(lastEval, finalIds);
+    if (finalConcepts.length < 2) throw new Error("최종 후보 선정에 실패했어요.");
+
+    agentLog("agent", `루프 종료: ${rounds.length}회 평가, 최종 ${finalConcepts.map((c) => c.name).join(" / ")}`, undefined, trace);
 
     return NextResponse.json({
       originalCandidates,
       round1,
-      repairSummary: toStringArray(parsed.repairSummary),
-      repairedCandidates: candidateBase,
+      repairSummary: repairSummaryAll,
+      repairedCandidates: candidates,
       round2,
       finalConcepts,
+      rounds,
+      iterations: rounds.length,
+      passScore: PASS_SCORE,
+      trace,
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : "통합 스타일링 계획 중 알 수 없는 오류";
-    agentLog("evaluate", `✗ 요청 실패: ${message}`);
-    return NextResponse.json({ error: message }, { status: 500 });
+    const message = e instanceof Error ? e.message : "스타일링 계획 중 알 수 없는 오류";
+    agentLog("evaluate", `✗ 요청 실패: ${message}`, undefined, trace);
+    return NextResponse.json({ error: message, trace }, { status: 500 });
   }
 }

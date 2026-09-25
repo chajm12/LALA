@@ -1,82 +1,119 @@
 import { NextResponse } from "next/server";
-import { OPENAI_SERVICE_TIER, openai, TREND_MODEL } from "@/lib/openai";
-import { agentLog } from "@/lib/log";
+import { chat, chatJson, JUDGE_MODEL, PLANNER_MODEL } from "@/lib/nim";
+import { getWeather, type WeatherReport } from "@/lib/tools/weather";
+import { catalogSummary } from "@/lib/tools/catalog";
+import { agentLog, type TraceEvent } from "@/lib/log";
+import type { ParsedRequest } from "@/lib/styling";
 
-// Split into two independent web_search_preview calls (weather/place vs
-// style/trend) so they run concurrently instead of forcing one search loop
-// to chase both topics sequentially - same research scope, roughly half
-// the wall-clock time. Combines with OPENAI_SERVICE_TIER (queue priority)
-// rather than replacing it - the two speed levers are independent.
+/**
+ * 1단계: 입력 해석(JUDGE, 빠른 모델) → 날씨 도구 호출(Open-Meteo) → 스타일 방향 종합(PLANNER)
+ * 모델 두 종 + 외부 도구 한 개. 프론트 계약(trend: string)은 유지하고 parsed/weather/trace 를 추가로 돌려준다.
+ */
 
-async function researchWeather(keyword: string) {
-  const response = await openai.responses.create({
-    model: TREND_MODEL,
-    service_tier: OPENAI_SERVICE_TIER,
-    tools: [{ type: "web_search_preview" }],
-    input: `사용자 요청: "${keyword}"
-
-이 요청에서 날짜, 계절/시기, 지역(장소)이 언급되어 있는지 파악하고, 다음을 실제로 검색해서 조사해줘:
-1. 날짜와 장소가 있다면: 해당 날짜·장소의 날씨 또는 예보를 우선 조사해. 예보가 불가능한 먼 날짜라면 해당 날짜의 계절감과 장소 대분류(시/군/구)의 대표 기후를 사용해.
-2. 날씨 관련 키워드(여름, 장마, 추움, 더움 등)가 이미 입력에 있으면 그 키워드를 1순위로 반영하고, 없다면 장소의 대분류 기준 날씨/기후를 보조로 반영해.
-3. 날씨/계절/장소에 맞는 원단, 실루엣, 레이어링 방향을 제시해. "여름이니까 반팔"처럼 뭉뚱그리지 말고 가능한 경우 실제 기온/강수/습도 근거를 포함해.
-
-반드시 포함할 항목:
-- 입력 해석 (날짜·장소 인식 결과)
-- 날짜·장소 기반 날씨/계절 판단
-- 날씨에 맞는 원단/실루엣/레이어링 방향
-- 착장 후보 생성 시 날씨 관련 주의할 실패 가능성 (예: 비 예보인데 스웨이드, 추운데 얇은 원단 등)
-
-답변은 "${keyword}"와 같은 언어로 작성해.`,
-  });
-  return response.output_text;
+function nextSaturday() {
+  const d = new Date();
+  d.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7 || 7));
+  return d.toISOString().slice(0, 10);
 }
 
-async function researchStyleTrend(keyword: string) {
-  const response = await openai.responses.create({
-    model: TREND_MODEL,
-    service_tier: OPENAI_SERVICE_TIER,
-    tools: [{ type: "web_search_preview" }],
-    input: `사용자 요청: "${keyword}"
+async function parseRequest(keyword: string, trace: TraceEvent[]): Promise<ParsedRequest> {
+  const today = new Date().toISOString().slice(0, 10);
+  agentLog("trend", "자연어 입력에서 날짜·장소·상황·체형 추출", `chat.completions · ${JUDGE_MODEL}`, trace);
+  const raw = await chatJson<Partial<ParsedRequest> & { date?: string }>(JUDGE_MODEL, [
+    {
+      role: "system",
+      content: `너는 스타일링 요청을 구조화하는 파서다. 오늘은 ${today} 이다. JSON 만 출력한다.`,
+    },
+    {
+      role: "user",
+      content: `요청: "${keyword}"
 
-이 요청에서 지역(장소), 성별, 키, 몸무게, 약속/상황이 언급되어 있는지 파악하고, 다음을 실제로 검색해서 조사해줘:
-성별이 명시되지 않았다면 기본값은 남성 코디로 분석해.
-1. 핵심 스타일 키워드, 전반적 스타일 방향, 타겟 고객층
-2. 지역이 언급됐다면: 그 지역 특유의 스트릿 패션/로컬 브랜드/팝업스토어 등 하이퍼로컬 트렌드 (일반적인 전국 트렌드 말고 그 지역만의 특징)
-3. 키와 몸무게가 있다면 체형과 트렌드가 충돌하지 않도록 추천 핏 방향을 제시해.
+다음 JSON 으로 답해:
+{
+  "date": "yyyy-mm-dd (연도가 없으면 오늘 이후 가장 가까운 해당 날짜, 날짜 언급이 전혀 없으면 null)",
+  "place": "장소명 (지오코딩 가능한 형태, 예: '성수동', '삼성역', '부산 해운대'; 없으면 '서울')",
+  "occasion": "상황/약속 (예: 카페 데이트, 결혼식 하객, 면접)",
+  "gender": "남성|여성 (언급 없으면 남성)",
+  "heightCm": number|null,
+  "weightKg": number|null,
+  "constraints": ["추가 요구/제약 (예: 베이지 피하기, 너무 포멀하지 않게)"],
+  "focusCategories": ["사용자가 특별히 추천을 요구한 품목 카테고리 (예: 신발)"]
+}`,
+    },
+  ], { temperature: 0.1, maxTokens: 800 });
 
-반드시 포함할 항목:
-- 트렌드 분석
-- 체형/핏 방향
-- 착장 후보 생성 시 스타일/상황 관련 주의할 실패 가능성 (예: 결혼식인데 캐주얼, 상황과 안 맞는 포멀리티 등)
-
-답변은 "${keyword}"와 같은 언어로 작성해.`,
-  });
-  return response.output_text;
+  const date = typeof raw.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.date) ? raw.date : nextSaturday();
+  return {
+    date,
+    dateInferred: !(typeof raw.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.date)),
+    place: String(raw.place || "서울"),
+    occasion: String(raw.occasion || "일상 외출"),
+    gender: raw.gender === "여성" ? "여성" : "남성",
+    heightCm: typeof raw.heightCm === "number" ? raw.heightCm : null,
+    weightKg: typeof raw.weightKg === "number" ? raw.weightKg : null,
+    constraints: Array.isArray(raw.constraints) ? raw.constraints.map(String) : [],
+    focusCategories: Array.isArray(raw.focusCategories) ? raw.focusCategories.map(String) : [],
+  };
 }
 
 export async function POST(req: Request) {
+  const trace: TraceEvent[] = [];
   try {
     const { keyword } = await req.json();
 
-    agentLog(
-      "trend",
-      `"${keyword}" 키워드로 날씨·트렌드 병렬 조사 시작 (2건 동시 실행)`,
-      `responses.create + web_search_preview · ${TREND_MODEL} · ${OPENAI_SERVICE_TIER}`,
-    );
+    const parsed = await parseRequest(keyword, trace);
+    agentLog("trend", `해석 결과: ${parsed.date}${parsed.dateInferred ? "(추정)" : ""} · ${parsed.place} · ${parsed.occasion} · ${parsed.gender}`, undefined, trace);
 
-    const [weather, styleTrend] = await Promise.all([
-      researchWeather(keyword),
-      researchStyleTrend(keyword),
-    ]);
+    agentLog("weather", `Open-Meteo 로 ${parsed.place} ${parsed.date} 날씨 조회`, "tool:get_weather", trace);
+    let weather: WeatherReport | null = null;
+    try {
+      weather = await getWeather(parsed.place, parsed.date);
+      agentLog("weather", weather.summary, undefined, trace);
+    } catch (e) {
+      agentLog("weather", `✗ 날씨 조회 실패, 계절감으로 대체: ${e instanceof Error ? e.message : e}`, undefined, trace);
+    }
 
-    const trend = `[날씨·장소 기반 분석]\n${weather}\n\n[스타일·트렌드 분석]\n${styleTrend}`;
+    let catalog = "";
+    try {
+      const s = catalogSummary();
+      catalog = `카탈로그 ${s.total}개 상품, 카테고리 분포: ${JSON.stringify(s.byCategory)}`;
+      agentLog("catalog", catalog, "tool:catalog_summary", trace);
+    } catch {
+      agentLog("catalog", "카탈로그 인덱스 없음 (상품 검색 단계 생략됨)", undefined, trace);
+    }
 
-    agentLog("trend", `조사 완료 (${trend.length}자, 병렬 2건)`);
+    agentLog("trend", "날씨·상황·체형을 종합해 스타일 방향 작성", `chat.completions · ${PLANNER_MODEL}`, trace);
+    const trend = await chat(PLANNER_MODEL, [
+      {
+        role: "system",
+        content: "너는 패션 MD 겸 스타일리스트다. 근거 없는 트렌드 단정은 피하고, 주어진 날씨 수치와 상황을 최우선 근거로 삼는다. 한국어로 답한다.",
+      },
+      {
+        role: "user",
+        content: `사용자 요청: "${keyword}"
+구조화된 해석: ${JSON.stringify(parsed)}
+날씨 도구 결과: ${weather ? JSON.stringify(weather) : "조회 실패 — 날짜의 계절감으로 판단"}
+${catalog}
 
-    return NextResponse.json({ trend });
+아래 두 섹션으로 정리해줘. 각 섹션은 6~10줄, 문장으로.
+
+[날씨·장소 기반 분석]
+- 기온/강수/습도 수치를 근거로 원단·실루엣·레이어링 방향
+- 착장 후보 생성 시 날씨 관련 실패 가능성 (예: 강수확률 높은데 스웨이드, 기온 낮은데 얇은 원단)
+
+[스타일·트렌드 분석]
+- 상황(${parsed.occasion})의 포멀리티와 장소(${parsed.place}) 무드에 맞는 핵심 스타일 키워드 3~5개
+- 체형(${parsed.heightCm ?? "?"}cm/${parsed.weightKg ?? "?"}kg)에 맞는 핏 방향
+- 사용자 제약(${parsed.constraints.join(", ") || "없음"})을 지키기 위한 주의점
+- 상황과 안 맞는 실패 가능성 (예: 결혼식에 캐주얼)`,
+      },
+    ], { temperature: 0.5, maxTokens: 2000 });
+
+    agentLog("trend", `분석 완료 (${trend.length}자)`, undefined, trace);
+    return NextResponse.json({ trend, parsed, weather, trace });
   } catch (e) {
     const message = e instanceof Error ? e.message : "트렌드 조사 중 알 수 없는 오류";
-    agentLog("trend", `✗ 요청 실패: ${message}`);
-    return NextResponse.json({ error: message }, { status: 500 });
+    agentLog("trend", `✗ 요청 실패: ${message}`, undefined, trace);
+    return NextResponse.json({ error: message, trace }, { status: 500 });
   }
 }

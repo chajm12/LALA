@@ -33,6 +33,8 @@ type Evaluation = {
   decisionReason?: string;
 };
 
+type RoundSummary = { round: number; minScore: number; passed: boolean; repairSummary: string[] };
+
 type EvaluationProcess = {
   originalCandidates: Concept[];
   round1: Evaluation[];
@@ -40,7 +42,12 @@ type EvaluationProcess = {
   repairedCandidates: Concept[];
   round2: Evaluation[];
   finalConcepts: Concept[];
+  iterations: number;
+  passScore: number;
+  rounds: RoundSummary[];
 };
+
+type TraceEvent = { t: number; scope: string; message: string; tool?: string };
 
 type ShoppingLink = {
   category?: string;
@@ -179,7 +186,29 @@ function normalizeEvaluationProcess(value: Record<string, unknown>): EvaluationP
     repairedCandidates: asConceptArray(value.repairedCandidates),
     round2: asEvaluationArray(value.round2),
     finalConcepts: asConceptArray(value.finalConcepts),
+    iterations: asScore(value.iterations) || 1,
+    passScore: asScore(value.passScore) || 0,
+    rounds: Array.isArray(value.rounds)
+      ? (value.rounds as Record<string, unknown>[]).map((r) => ({
+          round: asScore(r.round),
+          minScore: asScore(r.minScore),
+          passed: Boolean(r.passed),
+          repairSummary: asStringArray(r.repairSummary),
+        }))
+      : [],
   };
+}
+
+function asTraceEvents(value: unknown): TraceEvent[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((e): e is Record<string, unknown> => Boolean(e) && typeof e === "object")
+    .map((e) => ({
+      t: asScore(e.t),
+      scope: String(e.scope ?? "agent"),
+      message: String(e.message ?? ""),
+      tool: typeof e.tool === "string" ? e.tool : undefined,
+    }));
 }
 
 async function postJson(url: string, body: unknown) {
@@ -209,7 +238,7 @@ async function postJson(url: string, body: unknown) {
   return data;
 }
 
-function AgentTracePanel({ step }: { step: Step }) {
+function AgentTracePanel({ step, events }: { step: Step; events: TraceEvent[] }) {
   const activeIndex =
     step === "idle" ? -1 : step === "done" ? AGENT_TRACE_STEPS.length : AGENT_TRACE_STEPS.findIndex((item) => item.key === step);
 
@@ -250,6 +279,20 @@ function AgentTracePanel({ step }: { step: Step }) {
           );
         })}
       </div>
+      {events.length > 0 && (
+        <div className="mt-4 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">실행 로그 (서버 실제 호출)</p>
+          <ol className="mt-2 max-h-72 space-y-1.5 overflow-y-auto font-mono text-[11px] leading-relaxed">
+            {events.map((e, i) => (
+              <li key={`${e.t}-${i}`} className="break-keep text-zinc-600 dark:text-zinc-300">
+                <span className="mr-1 rounded bg-zinc-100 px-1 text-[10px] uppercase text-violet-600 dark:bg-zinc-800 dark:text-violet-300">{e.scope}</span>
+                {e.message}
+                {e.tool && <span className="ml-1 text-zinc-400">[{e.tool}]</span>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </aside>
   );
 }
@@ -363,6 +406,9 @@ export default function Home() {
   const [trend, setTrend] = useState<string | null>(null);
   const [variants, setVariants] = useState<Variant[]>([]);
   const [evaluationProcess, setEvaluationProcess] = useState<EvaluationProcess | null>(null);
+  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
+  const appendTrace = (data: Record<string, unknown>) =>
+    setTraceEvents((prev) => [...prev, ...asTraceEvents(data.trace)]);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("hidden");
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
@@ -429,6 +475,7 @@ export default function Home() {
 
     await (async () => {
       const lookbookData = await postJson("/api/lookbook", { concept });
+      appendTrace(lookbookData);
       Object.assign(lookbookPatch, {
         imageUrl: (lookbookData.imageUrl as string) ?? null,
         lookbookVerified: Boolean(lookbookData.verified),
@@ -458,6 +505,7 @@ export default function Home() {
 
     await postJson("/api/shopping", { keyword: runKeyword, concept })
       .then((shoppingData) => {
+        appendTrace(shoppingData);
         const links = asShoppingLinks(shoppingData.links);
         Object.assign(shoppingPatch, {
           shoppingLinks: links,
@@ -501,6 +549,7 @@ export default function Home() {
     setTrend(null);
     setVariants([]);
     setEvaluationProcess(null);
+    setTraceEvents([]);
     setLoadingPhase("hidden");
     setStartedAt(runStartedAt);
     setElapsedMs(0);
@@ -513,12 +562,16 @@ export default function Home() {
       }, 0);
       const trendData = await postJson("/api/trend", { keyword: runKeyword });
       setTrend(trendData.trend as string);
+      appendTrace(trendData);
 
       setStep("concept");
-      const evaluationData = normalizeEvaluationProcess(await postJson("/api/plan", {
+      const planData = await postJson("/api/plan", {
         keyword: runKeyword,
         trend: trendData.trend,
-      }));
+        parsed: trendData.parsed ?? null,
+      });
+      appendTrace(planData);
+      const evaluationData = normalizeEvaluationProcess(planData);
       setEvaluationProcess(evaluationData);
       const concepts = evaluationData.finalConcepts.length
         ? evaluationData.finalConcepts
@@ -712,16 +765,33 @@ export default function Home() {
                 </p>
               )}
             </div>
-            <AgentTracePanel step={step} />
+            <AgentTracePanel step={step} events={traceEvents} />
           </section>
         )}
 
         {evaluationProcess && (
           <section>
-            <h2 className="font-semibold text-black dark:text-zinc-50">2. 후보 평가·수정·재평가</h2>
+            <h2 className="font-semibold text-black dark:text-zinc-50">2. 후보 생성 → 평가 → 수정 루프</h2>
             <p className="mt-1 text-xs text-zinc-500">
-              룩북 이미지는 최종 2안만 생성하고, 아래에는 전체 후보의 평가 과정만 보여줍니다.
+              생성 모델과 별도의 평가 모델이 채점하고, 통과 기준({evaluationProcess.passScore}점) 미달이면 수정 후 재평가합니다.
+              이번 실행은 {evaluationProcess.iterations}회 평가로 종료됐어요.
             </p>
+            {evaluationProcess.rounds.length > 0 && (
+              <ol className="mt-2 flex flex-wrap gap-2 text-xs">
+                {evaluationProcess.rounds.map((r) => (
+                  <li
+                    key={r.round}
+                    className={
+                      r.passed
+                        ? "rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                        : "rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                    }
+                  >
+                    {r.round}차 · 최저 {r.minScore}점 · {r.passed ? "통과" : `미달 → 수정 ${r.repairSummary.length}건`}
+                  </li>
+                ))}
+              </ol>
+            )}
 
             <div className="mt-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
               <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
@@ -740,7 +810,7 @@ export default function Home() {
             <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
               <EvaluationList title="1차 평가" evaluations={evaluationProcess.round1} />
               <EvaluationList
-                title="재평가"
+                title={`${evaluationProcess.iterations}차 평가 (최종)`}
                 evaluations={evaluationProcess.round2}
                 previousEvaluations={evaluationProcess.round1}
                 hideSelectedDetails
