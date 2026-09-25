@@ -49,6 +49,16 @@ type EvaluationProcess = {
 
 type TraceEvent = { t: number; scope: string; message: string; tool?: string };
 
+type ChatTurn = { role: "user" | "assistant"; content: string; kind?: "question" };
+
+/** 서버 에이전트 상태의 룩 항목 (이미지는 "(client)" 로 대체돼 오므로 클라이언트가 보관) */
+type ServerLook = {
+  concept: Concept;
+  lookbook?: { imageUrl: string | null; verified: boolean; mismatches: string[]; retried: boolean; error: string | null };
+  links?: ShoppingLink[];
+  lastScore?: number;
+};
+
 type ShoppingLink = {
   category?: string;
   item: string;
@@ -157,27 +167,6 @@ function asEvaluationArray(value: unknown): Evaluation[] {
     : [];
 }
 
-function asShoppingLinks(value: unknown): ShoppingLink[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      if (!item || typeof item !== "object") return null;
-      const link = item as Record<string, unknown>;
-      const url = typeof link.url === "string" ? link.url : "";
-      if (!/^https?:\/\//.test(url)) return null;
-      const normalizedLink: ShoppingLink = {
-        category: typeof link.category === "string" ? link.category : undefined,
-        item: String(link.item ?? "추천 아이템"),
-        title: String(link.title ?? "비슷한 상품"),
-        url,
-        source: String(link.source ?? "쇼핑몰"),
-        reason: String(link.reason ?? "최종 착장과 유사한 아이템이에요."),
-      };
-      return normalizedLink;
-    })
-    .filter((item): item is ShoppingLink => item !== null);
-}
-
 function normalizeEvaluationProcess(value: Record<string, unknown>): EvaluationProcess {
   return {
     originalCandidates: asConceptArray(value.originalCandidates),
@@ -199,44 +188,6 @@ function normalizeEvaluationProcess(value: Record<string, unknown>): EvaluationP
   };
 }
 
-function asTraceEvents(value: unknown): TraceEvent[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((e): e is Record<string, unknown> => Boolean(e) && typeof e === "object")
-    .map((e) => ({
-      t: asScore(e.t),
-      scope: String(e.scope ?? "agent"),
-      message: String(e.message ?? ""),
-      tool: typeof e.tool === "string" ? e.tool : undefined,
-    }));
-}
-
-async function postJson(url: string, body: unknown) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  // A route can fail before it ever writes a JSON body (uncaught throw,
-  // network drop) - guard the parse so that shows up as a clear message
-  // instead of "Unexpected end of JSON input".
-  let data: Record<string, unknown> | null = null;
-  try {
-    data = await res.json();
-  } catch {
-    // leave data as null; res.ok check below produces the real error message
-  }
-
-  if (!res.ok) {
-    const message = (data?.error as string | undefined) ?? `${url} 요청 실패 (HTTP ${res.status})`;
-    throw new Error(message);
-  }
-  if (!data) {
-    throw new Error(`${url} 응답을 읽을 수 없어요 (빈 응답)`);
-  }
-  return data;
-}
 
 const SCOPE_STYLE: Record<string, string> = {
   trend: "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
@@ -476,8 +427,12 @@ export default function Home() {
   const [variants, setVariants] = useState<Variant[]>([]);
   const [evaluationProcess, setEvaluationProcess] = useState<EvaluationProcess | null>(null);
   const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
-  const appendTrace = (data: Record<string, unknown>) =>
-    setTraceEvents((prev) => [...prev, ...asTraceEvents(data.trace)]);
+  const [chat, setChat] = useState<ChatTurn[]>([]);
+  const [followUp, setFollowUp] = useState("");
+  const agentStateRef = useRef<Record<string, unknown> | null>(null);
+  const looksRef = useRef<Record<string, ServerLook>>({});
+  const finalIdsRef = useRef<string[]>([]);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase>("hidden");
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
@@ -496,20 +451,17 @@ export default function Home() {
     return () => window.clearInterval(interval);
   }, [isRunning, startedAt]);
 
-  function updateVariant(index: number, patch: Partial<Variant>) {
-    setVariants((prev) => prev.map((v, i) => (i === index ? { ...v, ...patch } : v)));
-  }
-
   function saveHistory(item: SearchHistoryItem) {
     setHistory((prev) => [item, ...prev.filter((historyItem) => historyItem.id !== item.id)].slice(0, 5));
   }
 
-  function updateHistoryVariants(id: string, variants: Variant[]) {
-    setHistory((prev) => prev.map((item) => (item.id === id ? { ...item, variants } : item)));
-  }
-
   function resetForNewSearch() {
     setKeyword("");
+    setChat([]);
+    setFollowUp("");
+    agentStateRef.current = null;
+    looksRef.current = {};
+    finalIdsRef.current = [];
     setError(null);
     setTrend(null);
     setVariants([]);
@@ -539,159 +491,164 @@ export default function Home() {
     }, 0);
   }
 
-  async function runLookbookWork(concept: Concept, index: number): Promise<Partial<Variant>> {
-    const lookbookPatch: Partial<Variant> = {};
 
-    await (async () => {
-      const lookbookData = await postJson("/api/lookbook", { concept });
-      appendTrace(lookbookData);
-      Object.assign(lookbookPatch, {
-        imageUrl: (lookbookData.imageUrl as string) ?? null,
-        lookbookVerified: Boolean(lookbookData.verified),
-        lookbookMismatches: Array.isArray(lookbookData.mismatches)
-          ? (lookbookData.mismatches as string[])
-          : [],
-        lookbookRetried: Boolean(lookbookData.retried),
-        lookbookError: (lookbookData.error as string) ?? null,
-      });
-      updateVariant(index, lookbookPatch);
-    })().catch((e) => {
-      Object.assign(lookbookPatch, {
-        lookbookError: e instanceof Error ? e.message : "룩북 이미지 생성 실패",
-      });
-      updateVariant(index, lookbookPatch);
-    });
-
-    return lookbookPatch;
+  function looksToVariants(): Variant[] {
+    return finalIdsRef.current
+      .map((id) => looksRef.current[id])
+      .filter((look): look is ServerLook => Boolean(look))
+      .map((look) => ({
+        concept: look.concept,
+        contradictionIssue: null,
+        imageUrl: look.lookbook?.imageUrl ?? null,
+        lookbookVerified: Boolean(look.lookbook?.verified),
+        lookbookMismatches: look.lookbook?.mismatches ?? [],
+        lookbookRetried: Boolean(look.lookbook?.retried),
+        lookbookError: look.lookbook?.error ?? null,
+        finalMaterials: null,
+        shoppingLinks: look.links ?? [],
+        shoppingError: look.links && look.links.length === 0 ? "조건에 맞는 상품을 카탈로그에서 찾지 못했어요." : null,
+      }));
   }
 
-  async function runShoppingWork(
-    runKeyword: string,
-    concept: Concept,
-    index: number,
-  ): Promise<Partial<Variant>> {
-    const shoppingPatch: Partial<Variant> = {};
-
-    await postJson("/api/shopping", { keyword: runKeyword, concept })
-      .then((shoppingData) => {
-        appendTrace(shoppingData);
-        const links = asShoppingLinks(shoppingData.links);
-        Object.assign(shoppingPatch, {
-          shoppingLinks: links,
-          shoppingError: links.length
-            ? null
-            : "조건에 맞는 직접 상품 상세 링크를 찾지 못했어요.",
-        });
-        updateVariant(index, shoppingPatch);
-      })
-      .catch((e) => {
-        Object.assign(shoppingPatch, {
-          shoppingError: e instanceof Error ? e.message : "구매 링크 검색 실패",
-        });
-        updateVariant(index, shoppingPatch);
-      });
-
-    return shoppingPatch;
+  function applyStatePatch(patch: Record<string, unknown>) {
+    if (typeof patch.trend === "string" && patch.trend) setTrend(patch.trend);
+    if (patch.plan && typeof patch.plan === "object") {
+      setEvaluationProcess(normalizeEvaluationProcess(patch.plan as Record<string, unknown>));
+    }
+    if (Array.isArray(patch.finalIds) && patch.finalIds.length) finalIdsRef.current = patch.finalIds.map(String);
+    if (patch.looks && typeof patch.looks === "object") {
+      for (const [id, raw] of Object.entries(patch.looks as Record<string, ServerLook>)) {
+        const prev = looksRef.current[id];
+        const next: ServerLook = { ...raw };
+        // 서버는 이미지를 "(client)" 로 보내므로 이전에 받은 실제 이미지를 유지
+        if (next.lookbook && next.lookbook.imageUrl === "(client)") {
+          next.lookbook = { ...next.lookbook, imageUrl: prev?.lookbook?.imageUrl ?? null };
+        }
+        looksRef.current[id] = next;
+      }
+    }
+    if (finalIdsRef.current.length) setVariants(looksToVariants());
   }
 
-  async function attachShoppingLinks(runId: string, runKeyword: string, baseVariants: Variant[]) {
-    const shoppingPatches = await Promise.all(
-      baseVariants.map((variant, index) => runShoppingWork(runKeyword, variant.concept, index)),
-    );
-    if (activeRunIdRef.current !== runId) return;
-    const variantsWithShopping = baseVariants.map((variant, index) => ({
-      ...variant,
-      ...shoppingPatches[index],
-    }));
-    setVariants(variantsWithShopping);
-    updateHistoryVariants(runId, variantsWithShopping);
+  function stepFromScope(scope: string): Step | null {
+    if (scope === "trend" || scope === "weather" || scope === "catalog") return "trend";
+    if (scope === "concept" || scope === "evaluate") return "concept";
+    if (scope === "lookbook" || scope === "shopping") return "variants";
+    return null;
   }
 
-  async function runPipeline() {
-    if (!keyword.trim()) return;
-    const runKeyword = keyword.trim();
+  async function runAgent(userText: string, isFollowUp: boolean) {
     const runStartedAt = getTimestamp();
     const runId = `${runStartedAt}`;
     activeRunIdRef.current = runId;
-
+    const nextChat: ChatTurn[] = [...chat, { role: "user", content: userText }];
+    setChat(nextChat);
+    setFollowUp("");
     setError(null);
-    setTrend(null);
-    setVariants([]);
-    setEvaluationProcess(null);
-    setTraceEvents([]);
-    setLoadingPhase("hidden");
     setStartedAt(runStartedAt);
     setElapsedMs(0);
     setIsHistoryOpen(false);
-
-    try {
-      setStep("trend");
+    setStep(isFollowUp ? "concept" : "trend");
+    if (!isFollowUp) {
+      setTrend(null);
+      setVariants([]);
+      setEvaluationProcess(null);
+      setTraceEvents([]);
+      setLoadingPhase("hidden");
+      agentStateRef.current = null;
+      looksRef.current = {};
+      finalIdsRef.current = [];
       window.setTimeout(() => {
         resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 0);
-      const trendData = await postJson("/api/trend", { keyword: runKeyword });
-      setTrend(trendData.trend as string);
-      appendTrace(trendData);
+    } else {
+      setTraceEvents((prev) => [...prev, { t: Date.now(), scope: "agent", message: `— 후속 요청: ${userText}` }]);
+    }
 
-      setStep("concept");
-      const planData = await postJson("/api/plan", {
-        keyword: runKeyword,
-        trend: trendData.trend,
-        parsed: trendData.parsed ?? null,
+    try {
+      // 이미지는 서버에 되돌려 보내지 않는다 (클라이언트가 보관)
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: nextChat.map(({ role, content }) => ({ role, content })),
+          state: agentStateRef.current,
+        }),
       });
-      appendTrace(planData);
-      const evaluationData = normalizeEvaluationProcess(planData);
-      setEvaluationProcess(evaluationData);
-      const concepts = evaluationData.finalConcepts.length
-        ? evaluationData.finalConcepts
-        : evaluationData.repairedCandidates.slice(0, 2);
+      if (!res.ok || !res.body) throw new Error(`에이전트 요청 실패 (HTTP ${res.status})`);
 
-      const initialVariants: Variant[] = concepts.map((concept) => ({
-        concept,
-        contradictionIssue: null,
-        imageUrl: null,
-        lookbookVerified: false,
-        lookbookMismatches: [],
-        lookbookRetried: false,
-        lookbookError: null,
-        finalMaterials: null,
-        shoppingLinks: [],
-        shoppingError: null,
-      }));
-      setVariants(initialVariants);
-
-      setStep("variants");
-
-      const variantPatches = await Promise.all(concepts.map((concept, i) => runLookbookWork(concept, i)));
-      const finalVariants = initialVariants.map((variant, index) => ({
-        ...variant,
-        ...variantPatches[index],
-      }));
-      setVariants(finalVariants);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = false;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line || activeRunIdRef.current !== runId) continue;
+          const ev = JSON.parse(line) as Record<string, unknown>;
+          if (ev.type === "trace") {
+            const t = ev.event as TraceEvent;
+            setTraceEvents((prev) => [...prev, t]);
+            const s = stepFromScope(t.scope);
+            if (s) setStep(s);
+          } else if (ev.type === "state") {
+            applyStatePatch(ev.patch as Record<string, unknown>);
+          } else if (ev.type === "assistant" || ev.type === "question") {
+            const turn: ChatTurn = { role: "assistant", content: String(ev.text), kind: ev.type === "question" ? "question" : undefined };
+            setChat((prev) => [...prev, turn]);
+          } else if (ev.type === "done") {
+            agentStateRef.current = ev.state as Record<string, unknown>;
+            finished = true;
+          } else if (ev.type === "error") {
+            throw new Error(String(ev.message));
+          }
+        }
+      }
+      if (!finished) throw new Error("에이전트 응답이 중간에 끊겼어요.");
 
       const finishedElapsedMs = getTimestamp() - runStartedAt;
       setElapsedMs(finishedElapsedMs);
       setStartedAt(null);
       setStep("done");
+      const finalVariants = looksToVariants();
       saveHistory({
         id: runId,
-        keyword: runKeyword,
+        keyword: nextChat[0]?.content ?? userText,
         createdAt: new Date(runStartedAt).toLocaleString("ko-KR", { hour12: false }),
         elapsedMs: finishedElapsedMs,
-        trend: trendData.trend as string,
+        trend,
         variants: finalVariants,
-        evaluationProcess: evaluationData,
+        evaluationProcess,
       });
-      void attachShoppingLinks(runId, runKeyword, finalVariants);
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했어요.");
-      setStep("idle");
+      setStep(isFollowUp ? "done" : "idle");
       setStartedAt(null);
       setElapsedMs(getTimestamp() - runStartedAt);
       setLoadingPhase("hidden");
-      activeRunIdRef.current = null;
     }
   }
+
+  function runPipeline() {
+    if (!keyword.trim()) return;
+    setChat([]);
+    void runAgent(keyword.trim(), false);
+  }
+
+  function sendFollowUp() {
+    const text = followUp.trim();
+    if (!text || isRunning) return;
+    void runAgent(text, true);
+  }
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [chat.length]);
 
   return (
     <div className="retro-page min-h-screen font-sans">
@@ -996,6 +953,64 @@ export default function Home() {
                 </div>
               ))}
             </div>
+          </section>
+        )}
+
+        {chat.length > 0 && (
+          <section className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <h2 className="font-semibold text-black dark:text-zinc-50">4. 에이전트와 대화</h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              결과를 보고 이어서 요청하세요. 에이전트가 바꿔야 할 부분만 골라 다시 작업합니다 (예: &quot;두 번째 룩 신발을 로퍼로&quot;, &quot;날짜를 11월 1일로&quot;).
+            </p>
+            <div className="mt-3 flex max-h-80 flex-col gap-2 overflow-y-auto">
+              {chat.map((turn, i) => (
+                <div key={i} className={turn.role === "user" ? "flex justify-end" : "flex justify-start"}>
+                  <div
+                    className={
+                      turn.role === "user"
+                        ? "max-w-[85%] rounded-2xl rounded-br-sm bg-zinc-900 px-3.5 py-2 text-sm text-white dark:bg-zinc-100 dark:text-black"
+                        : turn.kind === "question"
+                        ? "max-w-[85%] rounded-2xl rounded-bl-sm border border-violet-200 bg-violet-50 px-3.5 py-2 text-sm text-violet-900 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-100"
+                        : "max-w-[85%] rounded-2xl rounded-bl-sm bg-zinc-100 px-3.5 py-2 text-sm text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
+                    }
+                  >
+                    {turn.kind === "question" && <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wide text-violet-500">질문</span>}
+                    <p className="whitespace-pre-wrap break-keep leading-relaxed">{turn.content}</p>
+                  </div>
+                </div>
+              ))}
+              {isRunning && (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-zinc-100 px-3.5 py-2 text-sm text-zinc-500 dark:bg-zinc-900">
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-700 dark:border-t-zinc-300" />
+                    {stepLabels[step]}
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+            <form
+              className="mt-3 flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                sendFollowUp();
+              }}
+            >
+              <input
+                value={followUp}
+                onChange={(e) => setFollowUp(e.target.value)}
+                placeholder={isRunning ? "에이전트가 작업 중이에요..." : "후속 요청을 입력하세요"}
+                disabled={isRunning}
+                className="flex-1 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-50"
+              />
+              <button
+                type="submit"
+                disabled={isRunning || !followUp.trim()}
+                className="rounded-md bg-black px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-40 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+              >
+                보내기
+              </button>
+            </form>
           </section>
         )}
         </div>
