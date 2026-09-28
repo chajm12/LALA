@@ -673,12 +673,21 @@ export default function Home() {
   const [isFinalPlanOpen, setIsFinalPlanOpen] = useState(false);
   const [openScoreIndex, setOpenScoreIndex] = useState<number | null>(null);
   const [refiningIndex, setRefiningIndex] = useState<number | null>(null);
+  const [lookbookStartedAt, setLookbookStartedAt] = useState<number | null>(null);
+  const [lookbookElapsedMs, setLookbookElapsedMs] = useState(0);
   const resultsRef = useRef<HTMLElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const activeRunIdRef = useRef<string | null>(null);
   const [shoppingRequests] = useState(createShoppingRequestRegistry);
 
   useEffect(() => () => shoppingRequests.cancelAll(), [shoppingRequests]);
+
+  // 룩북 생성 중 경과 시간 (플레이스홀더에 표시)
+  useEffect(() => {
+    if (lookbookStartedAt === null) return;
+    const timer = window.setInterval(() => setLookbookElapsedMs(Date.now() - lookbookStartedAt), 500);
+    return () => window.clearInterval(timer);
+  }, [lookbookStartedAt]);
 
   useEffect(() => {
     const container = chatScrollRef.current;
@@ -1186,12 +1195,8 @@ export default function Home() {
       appendAgentTrace(data.trace);
       const process = normalizeEvaluationProcess(data);
       setEvaluationProcess(process);
-      const sorted = [...process.repairedCandidates].sort((a, b) => {
-        const rankA = process.round2.find((item) => item.id === a.id)?.rank ?? 999;
-        const rankB = process.round2.find((item) => item.id === b.id)?.rank ?? 999;
-        return rankA - rankB;
-      });
-      setSelectedCandidateIds((process.finalConcepts.length ? process.finalConcepts : sorted.slice(0, 2)).map((item) => item.id ?? item.name));
+      // 기본 선택 없음: 사용자가 직접 고른 후보만 룩북으로 만든다 (에이전트 추천 2안은 순위·배지로만 표시)
+      setSelectedCandidateIds([]);
       setScreen("candidates");
       setIsBusy(false);
     } catch (e) {
@@ -1240,6 +1245,8 @@ export default function Home() {
     setIsBusy(true);
     setStep("variants");
     setVariants(selected.map(emptyVariant));
+    setLookbookElapsedMs(0);
+    setLookbookStartedAt(getTimestamp());
     setScreen("final");
     const lookbookCall: AgentTraceEvent = {
       type: "tool_call",
@@ -1273,6 +1280,7 @@ export default function Home() {
       }),
     );
     setVariants(results);
+    setLookbookStartedAt(null);
     const verifiedCount = results.filter((item) => item.lookbookVerified).length;
     const lookbookResult: AgentTraceEvent = {
       type: "tool_result",
@@ -1334,6 +1342,31 @@ export default function Home() {
     );
   }
 
+  function renderLookbookPlaceholder(name: string) {
+    const seconds = Math.floor(lookbookElapsedMs / 1000);
+    // 한 번의 호출 안에서 이미지 생성 → 명세 비교가 이어지므로, 경과 시간으로 현재 단계를 안내 (예상)
+    const phase = seconds < 25 ? 0 : 1;
+    const phases = ["룩북 이미지 생성", "이미지와 착장 명세 비교"];
+    return (
+      <div className="lookbook-placeholder mt-2" role="status" aria-live="polite">
+        <div className="lookbook-shimmer" />
+        <div className="lookbook-placeholder-body">
+          <span className="h-9 w-9 animate-spin rounded-full border-[3px] border-zinc-300 border-t-black" />
+          <p className="mt-4 text-sm font-semibold text-black">{name} 룩북을 만들고 있어요</p>
+          <p className="mt-1 text-xs text-zinc-500">보통 20~60초 걸려요 · {seconds}초 경과</p>
+          <ol className="mt-4 flex items-center gap-2 text-[11px]">
+            {phases.map((label, index) => (
+              <li key={label} className={index === phase ? "lookbook-phase lookbook-phase-active" : index < phase ? "lookbook-phase lookbook-phase-done" : "lookbook-phase"}>
+                <span className="lookbook-phase-dot" />
+                {label}
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
+    );
+  }
+
   function renderLookbookCard(v: Variant, variantIndex: number) {
     const isRefining = refiningIndex === variantIndex;
     const evaluation = evaluationById.get(v.concept.id ?? v.concept.name);
@@ -1381,10 +1414,7 @@ export default function Home() {
         ) : v.lookbookError ? (
           <p className="mt-2 bg-red-50 p-3 text-sm text-red-700">✗ 이미지 생성 실패: {v.lookbookError}</p>
         ) : (
-          <p className="mt-2 flex items-center gap-2 bg-zinc-50 p-8 text-sm text-zinc-400">
-            <span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-500" />
-            선택한 룩을 이미지로 생성 중...
-          </p>
+          renderLookbookPlaceholder(v.concept.name)
         )}
 
         {v.imageUrl && (
@@ -1645,11 +1675,18 @@ export default function Home() {
                   const evaluation = evaluationById.get(id);
                   const selected = selectedCandidateIds.includes(id);
                   return (
-                    <button key={id} type="button" onClick={() => toggleCandidate(id)} aria-pressed={selected} className={selected ? "text-left border-2 border-black bg-zinc-50 p-4 transition" : "text-left border border-zinc-200 bg-white p-4 transition hover:border-zinc-700"}>
+                    <button key={id} type="button" onClick={() => toggleCandidate(id)} aria-pressed={selected} className={selected ? "candidate-card candidate-card-selected text-left p-4" : "candidate-card text-left p-4"}>
                       <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">{evaluation?.rank ?? "-"}위</p>
-                          <h3 className="mt-1 break-keep text-base font-semibold text-black">{candidate.name}</h3>
+                        <div className="flex items-start gap-3">
+                          <span className="candidate-check" aria-hidden="true">
+                            <svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M4 10.5l4 4 8-9" />
+                            </svg>
+                          </span>
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">{evaluation?.rank ?? "-"}위{evaluationProcess.finalConcepts.some((item) => (item.id ?? item.name) === id) ? " · 에이전트 추천" : ""}</p>
+                            <h3 className="mt-1 break-keep text-base font-semibold text-black">{candidate.name}</h3>
+                          </div>
                         </div>
                         <span className="shrink-0 bg-black px-2 py-1 text-xs font-semibold text-white">{evaluation?.totalScore ?? 0}점</span>
                       </div>
@@ -1661,7 +1698,7 @@ export default function Home() {
                       <p className="mt-3 break-keep text-xs text-zinc-500">핵심 아이템 · {(candidate.outfitItems ?? []).join(", ")}</p>
                       <p className="mt-2 break-keep text-xs text-zinc-600">{evaluation?.decisionReason}</p>
                       {evaluationProcess.planStatus === "partial" && Boolean(evaluation?.failureReasons.length) && <p className="mt-2 break-keep text-xs text-zinc-500">보완할 점 · {evaluation?.failureReasons.slice(0, 2).join(" / ")}</p>}
-                      <p className="mt-3 text-xs font-medium text-zinc-700">{selected ? "✓ 룩북 생성 대상으로 선택됨" : "눌러서 룩북 대상에 포함"}</p>
+                      <p className="mt-3 text-xs font-medium text-zinc-700">{selected ? "룩북 생성 대상으로 선택됨" : "눌러서 룩북 대상에 포함"}</p>
                     </button>
                   );
                 })}

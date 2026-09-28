@@ -300,7 +300,141 @@ body {
   border-color: #2a2a2a;
 }
 
-/* 6) 검색·입력 박스도 같은 모서리 언어로 */
+/* 6) 후보 카드: 선택 시 베이지 배경 + 검은 테두리 + 체크 표시 */
+.candidate-card {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--card);
+  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.candidate-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 6px 16px rgba(26, 26, 26, 0.06);
+}
+
+.candidate-card-selected,
+.candidate-card-selected:hover {
+  border-color: var(--ink);
+  background: var(--card-soft);
+  box-shadow: 0 0 0 1px var(--ink), 0 8px 20px rgba(26, 26, 26, 0.08);
+}
+
+.candidate-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--card);
+  color: transparent;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.candidate-card:hover .candidate-check {
+  border-color: var(--ink);
+}
+
+.candidate-card-selected .candidate-check {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #ffffff;
+  transform: scale(1.06);
+}
+
+.candidate-card-selected .candidate-check svg path {
+  stroke-dasharray: 22;
+  stroke-dashoffset: 22;
+  animation: candidate-check-draw 220ms ease-out forwards;
+}
+
+@keyframes candidate-check-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* 7) 룩북 생성 플레이스홀더: 이미지 비율의 스켈레톤 + 진행 안내 */
+.lookbook-placeholder {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--card-soft);
+}
+
+.lookbook-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.75) 50%, transparent 80%);
+  background-size: 220% 100%;
+  animation: lookbook-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes lookbook-shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
+.lookbook-placeholder-body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.lookbook-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--ink-muted);
+}
+
+.lookbook-phase-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.lookbook-phase-active {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.lookbook-phase-active .lookbook-phase-dot {
+  background: var(--ink);
+  animation: lookbook-pulse 1s ease-in-out infinite;
+}
+
+.lookbook-phase-done {
+  color: var(--ink);
+}
+
+.lookbook-phase-done .lookbook-phase-dot {
+  background: #3f8f5f;
+}
+
+@keyframes lookbook-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.6); opacity: 0.5; }
+}
+
+/* 8) 검색·입력 박스도 같은 모서리 언어로 */
 .style-search {
   border-radius: 16px;
 }
