@@ -289,17 +289,15 @@ body {
   box-shadow: 0 6px 16px rgba(26, 26, 26, 0.08);
 }
 
-/* 기본 선택지: 평소엔 다른 카드와 같은 흰 배경에 테두리만 조금 진하게, 마우스를 올렸을 때만 검게 반전 */
-.consult-option-primary {
-  border-color: var(--line-strong);
-  background: var(--card);
+/* 모든 선택지는 같은 모양·같은 hover 반응 (기본 선택지도 예외 없음) */
+.consult-option-primary,
+.consult-option-primary:hover {
   color: var(--ink);
 }
 
 .consult-option-primary:hover {
   border-color: var(--ink);
-  background: var(--ink);
-  color: #ffffff;
+  background: #fbfaf8;
 }
 
 /* 6) 후보 카드: 선택 시 베이지 배경 + 검은 테두리 + 체크 표시 */
