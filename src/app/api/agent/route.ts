@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { agentLog } from "@/lib/log";
+import { callInternalJson } from "@/lib/internal-route-client";
 
 type TraceEvent = {
   type: "tool_call" | "tool_result";
@@ -55,16 +56,10 @@ async function runNatWorkflow(keyword: string) {
 }
 
 async function callInternalRoute(req: Request, path: string, body: unknown) {
-  const url = new URL(path, req.url);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
-  const data = (await response.json()) as Record<string, unknown>;
-  if (!response.ok) throw new Error(String(data.error ?? `${path} 요청 실패`));
-  return data;
+  return callInternalJson(req, path, body, path === "/api/shopping" ? {
+    timeoutMs: 120_000,
+    timeoutMessage: "상품 검색 시간이 초과됐어요. 이 룩의 상품을 다시 찾아주세요.",
+  } : {});
 }
 
 function actionToolName(action: Exclude<AgentAction, "full">) {
@@ -132,7 +127,7 @@ async function executeTool(
     pushTrace(trace, {
       type: "tool_result",
       tool: name,
-      message: `후보 5개를 평가하고 최종 ${finalConcepts.length}안을 선택했습니다.`,
+      message: `${result.planStatus === "partial" ? "보완 미완료 항목을 표시하고 확보한 후보에서" : "후보를 평가하고"} 최종 ${finalConcepts.length}안을 선택했습니다.`,
     }, emit);
     return { ok: true, summary: "plan_ready", finalConcepts };
   }
@@ -154,22 +149,22 @@ async function executeTool(
           evaluation,
           trend: state.trend,
           weather: state.weather,
-        });
+        }).catch((error) => ({ imageUrl: null, verified: false, error: error instanceof Error ? error.message : "이미지 생성 실패" }) as Record<string, unknown>);
       }),
     );
     state.variants = results.map((result, index) => ({
       ...(concepts[index] as Record<string, unknown>),
       ...result,
-      concept: concepts[index],
+      concept: result.concept ?? concepts[index],
       shoppingLinks: [],
       shoppingError: null,
       shoppingLoading: false,
     }));
-    const verifiedCount = results.filter((result) => Boolean(result.verified)).length;
+    const verifiedCount = results.filter((result) => result.verified === true).length;
     pushTrace(trace, {
       type: "tool_result",
       tool: name,
-      message: `룩북 ${results.length}장을 생성했고 ${verifiedCount}장을 Vision 검증 통과시켰습니다.`,
+      message: `${results.length}개 중 ${results.filter((result) => result.imageUrl).length}개 룩북을 생성했습니다. 이미지 비교 통과: ${verifiedCount}개. 나머지는 확인 상태를 표시합니다.`,
     }, emit);
     return { ok: true, summary: "lookbook_ready", verifiedCount };
   }
@@ -294,12 +289,12 @@ async function runAgentAction(req: Request, action: Exclude<AgentAction, "full">
     message: action === "consult"
       ? "사용자 피드백을 반영한 스타일 상담을 완료했습니다."
       : action === "plan"
-        ? "후보 생성·평가·수정·재평가를 완료했습니다."
+        ? result.planStatus === "partial" ? "확보한 대안 후보를 평가했습니다. 보완 미완료 상태로 룩북 선택을 계속합니다." : "후보 생성·평가·수정·재평가를 완료했습니다."
         : action === "lookbook"
-          ? "선택한 룩의 이미지 생성과 Vision 검증을 완료했습니다."
+          ? result.imageUrl ? result.verified ? "룩북 생성과 이미지 비교를 완료했습니다." : "룩북을 생성했습니다. 이미지 비교 미완료 또는 불일치 항목은 카드에 표시합니다." : "룩북 이미지를 생성하지 못했습니다. 착장 명세는 유지합니다."
           : action === "refine"
             ? "사용자 수정 요청을 반영한 룩을 생성했습니다."
-            : "착장 아이템별 상품 링크를 확인했습니다.",
+            : result.warning ? String(result.warning) : "착장 아이템별 상품 링크를 확인했습니다.",
   });
   return { ...result, trace, runtime: "next-agent-orchestrator" };
 }

@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
+import { ensureGarmentSpecs, garmentSpecText, type GarmentSpec } from "@/lib/garment-specs";
+import { CORE_GARMENT_POLICY, coreGarmentCategory, normalizeCoreOutfitItems, sanitizeCoreConcept, sanitizeCoreText } from "@/lib/garments";
 import { parseJsonObjectFromText } from "@/lib/openai";
 import { getNvidiaClient, NVIDIA_PLAN_MODEL } from "@/lib/nvidia";
 import { agentLog } from "@/lib/log";
 import { conceptSimilarity, describeSimilarity } from "@/lib/similarity";
 import { runObjectiveVerifiers, type WeatherSnapshot } from "@/lib/verifiers";
+import { recoverPlanning, createBackupCandidates, explicitConstraintIssues, requestedShoeBrands, excludesTerm } from "@/lib/plan-recovery";
 
 type Concept = {
   id: string;
@@ -14,6 +17,7 @@ type Concept = {
   targetCustomer: string;
   materials: string[];
   outfitItems: string[];
+  garmentSpecs?: GarmentSpec[];
   bodyProfile: string;
   fitStrategy: string;
   stylingReason: string;
@@ -68,48 +72,11 @@ function toStringArray(value: unknown, splitString = false) {
   return [];
 }
 
-function toOutfitItems(value: unknown) {
-  const splitEntry = (entry: string) => {
-    const trimmed = entry.trim();
-    if (!trimmed) return [];
-    const categoryWords = trimmed.match(/자켓|재킷|블루종|코트|셔츠|티셔츠|니트|후드티|후드|맨투맨|폴로|팬츠|슬랙스|데님|청바지|스커트|치마|쇼츠|스니커즈|운동화|러닝화|로퍼|부츠|구두|샌들|가방|백|시계|벨트|모자|캡|비니/g) ?? [];
-    if (!trimmed.includes(":") && categoryWords.length >= 2) return categoryWords;
-    return [trimmed];
-  };
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => {
-      if (item && typeof item === "object") {
-        return Object.values(item as Record<string, unknown>).flatMap((entry) => splitEntry(String(entry)));
-      }
-      return splitEntry(String(item));
-    }).filter((item) => item && item !== "[object Object]");
-  }
-  if (value && typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>)
-      .flatMap(([key, entry]) => splitEntry(`${key}: ${String(entry)}`));
-  }
-  if (typeof value === "string" && value.trim()) {
-    return value.split(/[,\n·|/]+/).flatMap(splitEntry).filter(Boolean);
-  }
-  return [];
-}
-
-function labelOutfitItem(item: string) {
-  if (item.includes(":")) return item;
-  if (/자켓|재킷|블루종|코트|오버셔츠|베스트/.test(item)) return `아우터: ${item}`;
-  if (/팬츠|슬랙스|데님|청바지|스커트|치마|쇼츠/.test(item)) return `하의: ${item}`;
-  if (/스니커즈|운동화|러닝화|로퍼|부츠|구두|샌들/.test(item)) return `신발: ${item}`;
-  if (/가방|백|시계|벨트|모자|캡|비니/.test(item)) return `액세서리: ${item}`;
-  return `상의: ${item}`;
-}
 
 function normalizeOutfitItems(item: Record<string, unknown>, index: number) {
-  const raw = toOutfitItems(
+  const raw = normalizeCoreOutfitItems(
     item.outfitItems ?? item.outfit ?? item.keyItems ?? item.lookItems ?? item.items,
-  ).map(labelOutfitItem);
-  const context = Object.values(item)
-    .flatMap((value) => Array.isArray(value) ? value.map(String) : typeof value === "string" ? [value] : [])
-    .join(" ");
+  );
   const fallbackSets = [
     ["상의: 브러시드 코튼 셔츠", "하의: 세미와이드 팬츠", "신발: 미니멀 러닝화"],
     ["상의: 메리노 니트", "하의: 스트레이트 팬츠", "신발: 스웨이드 스니커즈"],
@@ -117,17 +84,9 @@ function normalizeOutfitItems(item: Record<string, unknown>, index: number) {
     ["상의: 컴팩트 스웨트셔츠", "하의: 릴랙스드 팬츠", "신발: 레트로 스니커즈"],
     ["상의: 가벼운 폴로 니트", "하의: 와이드 팬츠", "신발: 가죽 스니커즈"],
   ];
-  const inferred = [
-    context.match(/(?:셔츠|티셔츠|니트|후드티|후드|맨투맨|블라우스|폴로)[^,\n]*/)?.[0],
-    context.match(/(?:팬츠|슬랙스|데님|청바지|스커트|치마|쇼츠)[^,\n]*/)?.[0],
-    context.match(/(?:스니커즈|운동화|로퍼|부츠|구두|샌들)[^,\n]*/)?.[0],
-  ].filter((value): value is string => Boolean(value)).map((value, itemIndex) =>
-    `${["상의", "하의", "신발"][itemIndex]}: ${value.trim()}`,
-  );
-  const rawReady = raw.length >= 3 ? raw : [...raw, ...inferred.map(labelOutfitItem), ...fallbackSets[index % fallbackSets.length]];
-  return rawReady
-    .filter((value, itemIndex, items) => value && items.indexOf(value) === itemIndex)
-    .slice(0, 6);
+  // Missing categories are completed independently; an outerwear item never counts as an inner top.
+  const defaults = fallbackSets[index % fallbackSets.length];
+  return normalizeCoreOutfitItems([...raw, ...defaults]);
 }
 
 function cleanConceptDescription(value: unknown) {
@@ -153,7 +112,7 @@ function normalizeConcepts(value: unknown, referenceConcepts: Concept[] = []) {
       bodyProfile: String(item.bodyProfile ?? ""),
       fitStrategy: String(item.fitStrategy ?? ""),
       stylingReason: String(item.stylingReason ?? ""),
-    }));
+    })).map(sanitizeCoreConcept);
 }
 
 function extractConceptList(value: Record<string, unknown>) {
@@ -162,48 +121,6 @@ function extractConceptList(value: Record<string, unknown>) {
   // even when the prompt asks for `concepts`.
   if (Array.isArray(value.candidates)) return value.candidates;
   return [];
-}
-
-function normalizeEvaluations(value: unknown, concepts: Concept[]) {
-  const conceptsById = new Map(concepts.map((concept) => [concept.id, concept]));
-  const conceptsByName = new Map(concepts.map((concept) => [concept.name, concept]));
-
-  return asArray<Record<string, unknown>>(value).map((item, index): Evaluation => {
-    const matchedConcept =
-      conceptsById.get(String(item.id ?? "")) ??
-      conceptsByName.get(String(item.name ?? "")) ??
-      concepts[index];
-    const criteria = item.criteria && typeof item.criteria === "object"
-      ? (item.criteria as Record<string, unknown>)
-      : {};
-    const weatherScore = scoreOrFallback(item.weatherScore ?? criteria.weatherScore ?? criteria.weather);
-    const placeScore = scoreOrFallback(item.placeScore ?? criteria.placeScore ?? criteria.place);
-    const bodyFitScore = scoreOrFallback(item.bodyFitScore ?? criteria.bodyFitScore ?? criteria.bodyFit);
-    const trendScore = scoreOrFallback(item.trendScore ?? criteria.trendScore ?? criteria.trend);
-    const practicalityScore = scoreOrFallback(
-      item.practicalityScore ?? criteria.practicalityScore ?? criteria.practicality,
-    );
-    const computedTotal = Math.round(
-      (weatherScore + placeScore + bodyFitScore + trendScore + practicalityScore) / 5,
-    );
-
-    return {
-      id: matchedConcept?.id ?? String(item.id ?? `look_${String(index + 1).padStart(2, "0")}`),
-      name: matchedConcept?.name ?? String(item.name ?? `후보 ${index + 1}`),
-      requestScore: scoreOrFallback(item.requestScore ?? criteria.requestScore ?? criteria.request, 100),
-      weatherScore,
-      placeScore,
-      bodyFitScore,
-      trendScore,
-      practicalityScore,
-      colorScore: scoreOrFallback(item.colorScore ?? criteria.colorScore ?? criteria.color),
-      diversityScore: scoreOrFallback(item.diversityScore ?? criteria.diversityScore ?? criteria.diversity),
-      totalScore: scoreOrFallback(item.totalScore, computedTotal),
-      failureReasons: toStringArray(item.failureReasons),
-      revisionPlan: toStringArray(item.revisionPlan),
-      verifierIssues: toStringArray(item.verifierIssues),
-    };
-  });
 }
 
 const SIMILARITY_LIMIT = 0.45;
@@ -255,11 +172,11 @@ function replaceAvoidedColors(value: string, avoided: string[], replacement: str
 }
 
 function scoreUserRequestFit(keyword: string, concept: Concept) {
-  const requestText = directUserRequestText(keyword);
+  const requestText = sanitizeCoreText(directUserRequestText(keyword));
   const conceptText = `${concept.name} ${concept.description} ${concept.mood} ${concept.colorPalette.join(" ")} ${concept.fitStrategy} ${concept.materials.join(" ")} ${concept.outfitItems.join(" ")}`;
   const requestedTerms = [
     "데님", "청바지", "슬랙스", "체크", "스트라이프", "가죽", "레더", "니트", "후드", "셔츠", "티셔츠",
-    "스니커즈", "로퍼", "모자", "악세사리", "액세서리", "가방", "블라우스", "맨투맨", "오버핏", "세미오버", "슬림", "와이드", "테이퍼드", "캐주얼", "포멀", "스트릿", "시티보이",
+    "스니커즈", "로퍼", "블라우스", "맨투맨", "오버핏", "세미오버", "슬림", "와이드", "테이퍼드", "캐주얼", "포멀", "스트릿", "시티보이",
     "블랙", "화이트", "흰색", "베이지", "네이비", "브라운", "그린", "올리브", "차콜", "그레이", "크림", "아이보리", "핑크", "블루", "버건디",
   ];
   const activeTerms = requestedTerms.filter((term) => requestText.includes(term) && !termRejected(requestText, term));
@@ -281,10 +198,6 @@ function scoreUserRequestFit(keyword: string, concept: Concept) {
     브라운: ["브라운", "토프", "카멜"],
     ...COLOR_ALIASES,
     버건디: ["버건디", "와인", "딥 레드"],
-    모자: ["모자", "캡", "볼캡", "비니", "버킷"],
-    악세사리: ["액세서리", "악세사리", "주얼리", "가방", "백", "벨트", "시계", "스카프"],
-    액세서리: ["액세서리", "악세사리", "주얼리", "가방", "백", "벨트", "시계", "스카프"],
-    가방: ["가방", "백", "숄더백", "토트백"],
     체크: ["체크", "타탄", "깅엄", "윈도페인"],
     스트라이프: ["스트라이프", "줄무늬"],
     후드: ["후드", "후드티", "후디"],
@@ -334,9 +247,7 @@ function missingUserRequestTerms(keyword: string, concept: Concept) {
 function assertCandidateSet(
   candidates: Concept[],
   keyword: string,
-  intentSummary: string,
   stage: string,
-  requireDiversity = false,
 ) {
   if (candidates.length !== 5) {
     throw new Error(`${stage}에서 후보 ${candidates.length}개만 수신해 5개를 완성하지 못했습니다.`);
@@ -350,7 +261,7 @@ function assertCandidateSet(
       !concept.mood.trim() ? "mood" : "",
       !concept.colorPalette.length ? "colorPalette" : "",
       !concept.materials.length ? "materials" : "",
-      concept.outfitItems.length < 3 ? "outfitItems" : "",
+      ["상의", "하의", "신발"].some((category) => !concept.outfitItems.some((item) => coreGarmentCategory(item) === category)) ? "outfitItems" : "",
       !concept.bodyProfile.trim() ? "bodyProfile" : "",
       !concept.fitStrategy.trim() ? "fitStrategy" : "",
       !concept.stylingReason.trim() ? "stylingReason" : "",
@@ -373,26 +284,12 @@ function assertCandidateSet(
     throw new Error(`${stage} 결과에 중복된 후보 식별자가 있습니다.`);
   }
 
-  // Only the original request and appended user feedback are hard
-  // constraints. Model-inferred intent fields are context, not user commands.
-  const requestText = keyword;
-  const unsatisfied = candidates
-    .map((concept) => ({
-      name: concept.name,
-      score: scoreUserRequestFit(requestText, concept),
-      missing: missingUserRequestTerms(requestText, concept),
-    }))
-    .filter((item) => item.score < 100);
-  if (unsatisfied.length) {
-    throw new Error(
-      `${stage}에서 사용자 요구를 충족하지 못한 후보가 있습니다: ${unsatisfied.map((item) => `${item.name}(${item.score}점 · ${item.missing.join("·") || "세부 요구"})`).join(", ")}`,
-    );
-  }
-
-  const diversity = candidateSimilaritySummary(candidates);
-  if (requireDiversity && diversity.maximum >= 0.5) {
-    throw new Error(`수정 후에도 후보 컨셉이 서로 너무 비슷합니다. 다양성 기준을 충족하지 못했습니다.`);
-  }
+  // Missing style preferences lower the score; they must not discard every result.
+  // Explicit exclusions and requested shoe brands remain hard constraints.
+  const conflicts = candidates.flatMap((concept) =>
+    explicitConstraintIssues(keyword, concept.outfitItems).map((issue) => `${concept.name}: ${issue}`),
+  );
+  if (conflicts.length) throw new Error(`${stage} 요청 충돌: ${conflicts.join(" / ")}`);
 }
 
 type BottomConstraint = {
@@ -433,26 +330,25 @@ function applyUserConstraints(candidates: Concept[], keyword: string) {
   // Keep inferred intent out of hard-constraint enforcement. It can guide the
   // model, but it must not make a candidate fail when the user never asked for
   // that specific item or style word.
-  const requestText = directUserRequestText(keyword);
+  const requestText = sanitizeCoreText(directUserRequestText(keyword));
   const bottom = extractBottomConstraint(requestText);
   const avoidedColors = avoidedColorTerms(requestText);
-  const whiteShoeRequested = /(?:신발|스니커즈|운동화|슈즈)[^\n,.]{0,24}(?:흰색|화이트|오프화이트)|(?:흰색|화이트|오프화이트)[^\n,.]{0,24}(?:신발|스니커즈|운동화|슈즈)/.test(requestText);
-  const requestedTop = /(?:티셔츠|반팔|후드티|후디|맨투맨|셔츠|블라우스)/.test(requestText);
-  const topLabel = /후드티|후디/.test(requestText)
+  const whiteShoeRequested = !excludesTerm(requestText, ["화이트", "흰색"]) && /(?:신발|스니커즈|운동화|슈즈)[^\n,.]{0,24}(?:흰색|화이트|오프화이트)|(?:흰색|화이트|오프화이트)[^\n,.]{0,24}(?:신발|스니커즈|운동화|슈즈)/.test(requestText);
+  const requestedTop = ["티셔츠", "반팔", "후드티", "후디", "맨투맨", "셔츠", "블라우스"].some((term) => requestText.includes(term) && !excludesTerm(requestText, [term]));
+  const topLabel = /후드티|후디/.test(requestText) && !excludesTerm(requestText, ["후드티", "후디"])
     ? "후드티"
-    : /맨투맨/.test(requestText)
+    : /맨투맨/.test(requestText) && !excludesTerm(requestText, ["맨투맨"])
       ? "맨투맨"
-      : /티셔츠|반팔/.test(requestText)
+      : /티셔츠|반팔/.test(requestText) && !excludesTerm(requestText, ["티셔츠", "반팔"])
         ? "티셔츠"
-        : /블라우스/.test(requestText)
+        : /블라우스/.test(requestText) && !excludesTerm(requestText, ["블라우스"])
           ? "블라우스"
           : "셔츠";
-  const hatRequested = /모자/.test(requestText);
-  const accessoryRequested = /악세사리|액세서리|주얼리|가방/.test(requestText);
+  const shoeBrands = requestedShoeBrands(requestText);
   const streetRequested = /스트릿|스트리트/.test(requestText)
     && !termRejected(requestText, "스트릿")
     && !termRejected(requestText, "스트리트");
-  if (!bottom && !whiteShoeRequested && !requestedTop && !hatRequested && !accessoryRequested && !streetRequested && !avoidedColors.length) return candidates;
+  if (!bottom && !whiteShoeRequested && !requestedTop && !streetRequested && !avoidedColors.length && !shoeBrands.length) return candidates.map(ensureGarmentSpecs);
   return candidates.map((concept, index) => {
     const replacementColors = ["차콜", "브라운", "네이비", "크림", "버건디"]
       .filter((color) => !avoidedColors.includes(color));
@@ -466,10 +362,10 @@ function applyUserConstraints(candidates: Concept[], keyword: string) {
         ? `하의: ${["차콜", "블랙", "그레이", "브라운", "딥 네이비"][index % 5]} ${index % 2 ? "와이드" : "스트레이트"} 슬랙스`
         : "";
     const outfitItems = concept.outfitItems
-      .filter((item) => !bottom || !/하의|팬츠|바지|데님|슬랙스|슬랙|스커트|치마|쇼츠/.test(item))
+      .filter((item) => !bottom || coreGarmentCategory(item) !== "하의")
       .map((item) => replaceAvoidedColors(item, avoidedColors, replacementColor));
     if (requestedTop) {
-      const topIndex = outfitItems.findIndex((item) => /이너|상의|셔츠|티셔츠|니트|후드|맨투맨|블라우스/.test(item));
+      const topIndex = outfitItems.findIndex((item) => coreGarmentCategory(item) === "상의");
       const topItem = `상의: ${["오프화이트", "멜란지 그레이", "딥 네이비", "페이디드 블루", "버터 옐로"][index % 5]} ${topLabel}`;
       if (topIndex >= 0) outfitItems[topIndex] = topItem;
       else outfitItems.unshift(topItem);
@@ -480,17 +376,20 @@ function applyUserConstraints(candidates: Concept[], keyword: string) {
       if (shoeIndex >= 0) outfitItems[shoeIndex] = shoeItem;
       else outfitItems.push(shoeItem);
     }
-    if (hatRequested && !outfitItems.some((item) => /모자|캡|비니|버킷/.test(item))) {
-      outfitItems.push(`액세서리: ${["블랙 볼캡", "네이비 캡", "브라운 코듀로이 캡", "차콜 비니", "아이보리 버킷햇"][index % 5]}`);
-    }
-    if (accessoryRequested && !outfitItems.some((item) => /액세서리|악세사리|주얼리|가방|백/.test(item))) {
-      outfitItems.push(`액세서리: ${["실버 체인", "미니 숄더백", "가죽 벨트", "메탈 시계", "슬림 스카프"][index % 5]}`);
+    if (shoeBrands.length) {
+      const shoeIndex = outfitItems.findIndex((item) => /^신발\s*:/.test(item));
+      const current = shoeIndex >= 0 ? outfitItems[shoeIndex] : "";
+      if (!shoeBrands.some((brand) => current.includes(brand))) {
+        const shoeItem = `신발: ${whiteShoeRequested ? "화이트 " : ""}${shoeBrands[index % shoeBrands.length]} 스니커즈`;
+        if (shoeIndex >= 0) outfitItems[shoeIndex] = shoeItem;
+        else outfitItems.push(shoeItem);
+      }
     }
     if (streetRequested) {
       const conceptText = `${concept.mood} ${concept.fitStrategy} ${concept.materials.join(" ")} ${outfitItems.join(" ")}`;
       const streetSignals = /스트릿|스트리트|그래픽|스니커즈|카고|유틸리티|워싱|캡|트랙|나일론|후드|데님/.test(conceptText);
       if (!streetSignals) {
-        outfitItems.push(`스타일 포인트: ${["레트로 스니커즈", "카고 포켓 디테일", "그래픽 티셔츠", "나일론 크로스백", "볼캡"][index % 5]}`);
+        outfitItems.push(`스타일 포인트: ${["레트로 스니커즈", "카고 팬츠", "그래픽 티셔츠", "나일론 바람막이", "워시드 데님 팬츠"][index % 5]}`);
       }
     }
     if (bottomItem) outfitItems.push(bottomItem);
@@ -509,11 +408,20 @@ function applyUserConstraints(candidates: Concept[], keyword: string) {
         ? `사용자 요청에 따라 ${option} 하의를 고정하고 나머지 상의·아우터·신발·디테일을 후보별로 변주했습니다. ${concept.stylingReason}`
         : replaceAvoidedColors(concept.stylingReason, avoidedColors, replacementColor),
     };
+  }).map((candidate) => {
+    const enriched = ensureGarmentSpecs(candidate);
+    const replacement = ["차콜", "브라운", "네이비", "크림", "버건디"].find(color => !avoidedColors.includes(color)) ?? "네이비";
+    // Defaults for previously unspecified attributes must honor explicit exclusions too.
+    const garmentSpecs = enriched.garmentSpecs.map(spec => ({ ...spec,
+      item: replaceAvoidedColors(spec.item, avoidedColors, replacement),
+      ...(spec.color ? {color: replaceAvoidedColors(spec.color, avoidedColors, replacement)} : {}),
+    }));
+    return ensureGarmentSpecs({ ...enriched, garmentSpecs, outfitItems: garmentSpecs.map(garmentSpecText) });
   });
 }
 
 function buildUserIntentContract(keyword: string) {
-  const requestText = directUserRequestText(keyword);
+  const requestText = sanitizeCoreText(directUserRequestText(keyword));
   const feedbackLines = requestText
     .split("\n")
     .filter((line) => line.trim().startsWith("-"))
@@ -600,8 +508,8 @@ function applyFinalDecisions(evaluations: Evaluation[], finalConcepts: Concept[]
   return rankEvaluations(evaluations).map((item) => {
     const selected = finalIds.has(item.id);
     const defaultDecision = selected
-      ? `${item.rank}위, 재평가 총점 ${item.totalScore}점으로 최종 룩북 후보로 선택됐어요.`
-      : `${item.rank}위, 재평가 총점 ${item.totalScore}점으로 최종 룩북에서는 제외됐어요.`;
+      ? `${item.rank}위, 비교 점수 ${item.totalScore}점으로 최종 룩북 후보로 선택됐어요.`
+      : `${item.rank}위, 비교 점수 ${item.totalScore}점으로 최종 룩북에서는 제외됐어요.`;
     return {
       ...item,
       decisionStatus: selected ? "선택" : "탈락",
@@ -612,7 +520,7 @@ function applyFinalDecisions(evaluations: Evaluation[], finalConcepts: Concept[]
   });
 }
 
-async function createPlanJson(system: string, user: string, maxTokens: number) {
+async function createPlanJson(system: string, user: string, maxTokens: number, timeoutMs = 60_000) {
   agentLog(
     "concept",
     `NVIDIA 후보 JSON 요청 시작 (${system.length + user.length}자 · ${maxTokens}토큰)`,
@@ -633,7 +541,7 @@ async function createPlanJson(system: string, user: string, maxTokens: number) {
 
   const response = await getNvidiaClient().chat.completions.create(
     request as never,
-    { signal: AbortSignal.timeout(maxTokens >= 6000 ? 75_000 : 70_000) },
+    { signal: AbortSignal.timeout(timeoutMs) },
   );
   const content = response.choices[0]?.message?.content;
   const parsed = parseJsonObjectFromText(content);
@@ -659,7 +567,9 @@ async function generateCandidates(keyword: string, trend: string, intentSummary 
   const parsed = await createPlanJson(
     `너는 소비자 개인화 스타일링 후보 생성기다. 사고 과정과 설명 없이 JSON 객체 하나만 반환해.
 정확히 5개의 서로 다른 한국어 착장을 만들어라. 직접 요구와 피드백을 최우선으로 지키고 실제 날씨·약속·장소·체형을 반영하라. 레퍼런스는 복사하지 말고 스타일 신호로만 사용하라.
-5개는 아우터 구조, 하의 실루엣, 신발, 레이어링, 핏, 소재 중 4개 이상을 다르게 하라. 같은 상·하의 조합을 반복하지 마라. outfitItems는 이미지에 보일 핵심 착용 제품 4개만, 모든 문자열은 짧게 써라. 키·몸무게가 있으면 bodyProfile에 원 숫자와 현실적인 비율을 적고, 성별이 없으면 남성으로 처리하라.
+5개는 아우터 구조, 하의 실루엣, 신발, 레이어링, 핏, 소재 중 4개 이상을 다르게 하라. 같은 상·하의 조합을 반복하지 마라. outfitItems는 상의·하의·신발과 필요한 아우터만, 카테고리당 1개로 최대 4개, 모든 문자열은 짧게 써라. 키·몸무게가 있으면 bodyProfile에 원 숫자와 현실적인 비율을 적고, 성별이 없으면 남성으로 처리하라.
+${CORE_GARMENT_POLICY}
+각 outfitItems에는 개별 의류의 정확한 색상, 무지/체크/카모/그래픽 등 패턴, 긴팔/반팔/민소매, 바지의 데님/치노/슬랙스/트레이닝 종류, 셔츠의 버튼/하프집업 여밈을 명시한다. 전체 팔레트에만 색을 쓰지 않는다. 예: 상의: 버건디 무지 긴팔 크루넥 니트, 하의: 베이지 무지 긴바지 코튼 치노 팬츠, 아우터: 네이비 무지 민소매 경량 패딩 베스트.
 반드시 다음 필드를 모두 포함하라: id, name, description, mood, colorPalette, targetCustomer, materials, outfitItems, bodyProfile, fitStrategy, stylingReason. name 12자 이내, description 20자 이내, bodyProfile·fitStrategy·stylingReason은 각 30자 이내로 작성하라. 점수와 평가 필드는 만들지 마라. concepts 대신 candidates라는 키를 사용해도 된다.`,
     `${buildUserIntentContract(keyword)}\n\n원문 사용자 요청:\n${keyword}\n\n트렌드·날씨·장소 핵심:\n${compactTrend}${structuredIntent}`,
     1600,
@@ -807,53 +717,37 @@ function scoreEvaluations(
   });
 }
 
-async function repairAndEvaluateCandidates(
+async function repairCandidates(
   keyword: string,
   trend: string,
   candidates: Concept[],
   evaluations: Evaluation[],
-  weather: WeatherSnapshot | null,
   diversityFocus = false,
   intentSummary = "",
 ) {
-  const diversity = candidateSimilaritySummary(candidates);
-  trend += "\n\n[패션 디렉터 재검수 규칙]\n각 후보가 기본적인 옛날 코디처럼 보이면 최신 레퍼런스의 실루엣, 소재 질감, 패턴, 액세서리, 레이어링 중 가장 적합한 한두 가지를 보강해. 장소·날씨·체형과 충돌하지 않는 범위에서만 수정하고, 후보별 차이를 유지해." +
-    (diversityFocus
-      ? "\n[다양성 긴급 수정]\n후보 간 유사도가 높아. 사용자 상황에 맞는 공통 기준은 유지하되, 유사한 쌍마다 아우터 구조·하의 실루엣·신발 유형·레이어링 방식 중 최소 2개를 실제로 바꿔. 색상만 바꾸는 수정은 금지해."
-      : "");
+  const concerns = evaluations.map(({ id, failureReasons, revisionPlan }) => ({ id, failureReasons, revisionPlan }));
   const parsed = await createPlanJson(
-    `너는 최신 패션 레퍼런스를 이해하는 퍼스널 스타일링 repair·re-evaluation Tool이야. 모든 출력은 한국어로 작성해.
-1차 평가의 실패 원인과 수정 방향을 반영해 각 후보를 수정해.
-후보 수, 순서, id는 반드시 유지하고, 문제가 있는 아이템·소재·색·기장·핏만 최소한으로 변경해.
-각 후보의 고유한 무드와 다른 후보와의 차이는 유지해.
-수정한 후보를 바로 2차 평가해. placeScore는 장소·상황, bodyFitScore는 체형·핏, trendScore는 트렌드, practicalityScore는 실용성 점수야.
-각 평가의 failureReasons와 revisionPlan은 정확히 2개씩 작성해.
-후보 간 유사도 기록을 확인하고, 같은 베이스 아이템과 같은 비율이 반복되면 반드시 수정해. 레퍼런스는 스타일 신호일 뿐 복제 대상이 아니야.
-반드시 JSON만 반환해: { "concepts": Concept[], "evaluations": Evaluation[] }.
-Concept 필드: id, name, description, mood, colorPalette, targetCustomer, materials, outfitItems, bodyProfile, fitStrategy, stylingReason.
-Evaluation 필드: id, name, placeScore, bodyFitScore, trendScore, practicalityScore, failureReasons, revisionPlan.`,
-    `${buildUserIntentContract(keyword)}\n\n원문 사용자 요청:\n${keyword}\n\n트렌드/날씨/장소 분석:\n${trend}\n\n사용자 요구사항 Agent의 구조화 결과:\n${intentSummary || "없음"}\n\n후보 유사도 기록:\n${diversity.pairs.join("\n")}\n\n수정할 원 후보:\n${JSON.stringify(candidates)}\n\n1차 평가:\n${JSON.stringify(evaluations)}`,
-    4800,
+    `너는 퍼스널 스타일링 후보 수정 도구다. JSON 객체 하나만 반환한다.
+${CORE_GARMENT_POLICY}
+각 outfitItems에는 개별 의류의 정확한 색상, 무지/체크/카모/그래픽 등 패턴, 긴팔/반팔/민소매, 바지의 데님/치노/슬랙스/트레이닝 종류, 셔츠의 버튼/하프집업 여밈을 명시한다. 전체 팔레트에만 색을 쓰지 않는다. 예: 상의: 버건디 무지 긴팔 크루넥 니트, 하의: 베이지 무지 긴바지 코튼 치노 팬츠, 아우터: 네이비 무지 민소매 경량 패딩 베스트.
+후보 수·순서·id를 유지하고 사용자 요청을 지키면서 평가에서 지적한 의류만 최소한으로 바꾼다.
+상의·하의·신발을 포함하고 필요하면 벗을 수 있는 아우터를 추가한다. 제외 조건은 반드시 지킨다.
+원래 후보와 다른 이유 없는 변경은 하지 않는다. 신발 브랜드의 대안은 OR 조건이다.
+${diversityFocus ? "비슷한 후보는 하의 실루엣이나 겉옷 구조를 달리한다. 색상만 바꾸지 않는다." : "날씨와 이동량에 맞는 실용적인 보완을 우선한다."}
+응답: {"concepts": Concept[]}. Concept 필드: id, name, description, mood, colorPalette, targetCustomer, materials, outfitItems, bodyProfile, fitStrategy, stylingReason.
+각 문장은 짧게 작성한다. 평가·점수는 서버가 계산하므로 출력하지 않는다.`,
+    `${buildUserIntentContract(keyword)}\n원문 요청: ${keyword}\n분석: ${trend.slice(0, 1800)}\n요청 정리: ${intentSummary.slice(0, 1200)}\n후보: ${JSON.stringify(candidates)}\n보완할 점: ${JSON.stringify(concerns)}`,
+    2400,
+    45_000,
   );
   const repaired = normalizeConcepts(extractConceptList(parsed), candidates);
-  if (repaired.length !== candidates.length) {
-    throw new Error("재평가 응답이 기존 5개 후보를 모두 포함하지 않았습니다.");
-  }
-  const candidateBase = applyUserConstraints(repaired, keyword);
-  assertCandidateSet(candidateBase, keyword, intentSummary, "후보 수정");
-  const subjective = normalizeEvaluations(parsed.evaluations, candidateBase);
-  if (subjective.length !== candidates.length) {
-    throw new Error("재평가 응답이 5개 후보의 평가를 모두 포함하지 않았습니다.");
-  }
-  return {
-    candidates: candidateBase,
-    evaluations: scoreEvaluations(subjective, candidateBase, weather, 2, keyword),
-  };
+  if (repaired.length !== candidates.length) throw new Error("수정 응답이 기존 후보를 모두 포함하지 않았습니다.");
+  return applyUserConstraints(repaired, keyword);
 }
 
 export async function POST(req: Request) {
   try {
-    const { keyword, trend, weather, intent } = await req.json();
+    const { keyword, trend, weather, intent, consultationProposal } = await req.json();
     if (typeof keyword !== "string" || !keyword.trim()) {
       throw new Error("사용자 입력이 없어 후보를 생성할 수 없습니다.");
     }
@@ -863,7 +757,11 @@ export async function POST(req: Request) {
     if (!intent || typeof intent !== "object") {
       throw new Error("사용자 요구사항 구조화 결과가 없어 후보를 생성할 수 없습니다.");
     }
-    const intentSummary = intent && typeof intent === "object" ? JSON.stringify(intent).slice(0, 6_000) : "";
+    const consultationContext = typeof consultationProposal === "string" && consultationProposal.trim()
+      ? `\n상담에서 제안한 조합(사용자 직접 요청과 피드백 우선, 임의로 새 필수 조건 추가 금지): ${consultationProposal.trim().slice(0, 1600)}`
+      : "";
+    // Put the accepted consultation proposal first so compact prompts retain it.
+    const intentSummary = consultationContext + (intent && typeof intent === "object" ? JSON.stringify(intent).slice(0, 4_000) : "");
     const weatherSnapshot = weather && typeof weather === "object"
       ? (weather as WeatherSnapshot)
       : null;
@@ -873,82 +771,35 @@ export async function POST(req: Request) {
       `generate_outfit_candidates · ${NVIDIA_PLAN_MODEL}`,
     );
 
-    let originalCandidates: Concept[];
-    try {
-      originalCandidates = await generateCandidates(keyword, trend, intentSummary);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "알 수 없는 오류";
-      agentLog("concept", `후보 생성 실패: ${message}`, "strict candidate generation");
-      throw new Error(`사용자 입력에 맞는 후보를 생성하지 못했습니다. ${message}`);
+    const result = await recoverPlanning<Concept, Evaluation>({
+      generate: () => generateCandidates(keyword, trend, intentSummary),
+      fallback: () => applyUserConstraints(createBackupCandidates(keyword, weatherSnapshot), keyword),
+      validate: (candidates) => assertCandidateSet(candidates, keyword, "후보 검사"),
+      evaluate: (candidates, round) => rankEvaluations(localEvaluateCandidates(keyword, trend, candidates, weatherSnapshot, round)),
+      repair: (candidates, evaluations, diversity) => repairCandidates(keyword, trend, candidates, evaluations, diversity, intentSummary),
+      needsDiversity: (candidates) => candidateSimilaritySummary(candidates).maximum >= 0.5,
+      onFailure: (stage, error) => agentLog("evaluate", `${stage} 보완 중단, 확보한 후보로 계속: ${error instanceof Error ? error.message : "알 수 없는 오류"}`, "candidate recovery"),
+    });
+    const { originalCandidates, round1, warnings, evaluationStage, candidateSource } = result;
+    const candidateBase = result.candidates;
+    const finalConcepts = selectFinalConcepts(candidateBase, result.evaluations);
+    const round2 = applyFinalDecisions(result.evaluations, finalConcepts);
+    const missingPreferences = candidateBase.flatMap((concept) => missingUserRequestTerms(keyword, concept));
+    if (missingPreferences.length || round2.some((evaluation) => evaluation.requestScore < 100)) {
+      warnings.push("일부 세부 취향은 완전히 반영되지 않았어요. 후보별 비교 점수와 보완할 점을 확인해주세요.");
     }
-    originalCandidates = applyUserConstraints(originalCandidates, keyword);
-    assertCandidateSet(originalCandidates, keyword, intentSummary, "1차 후보 생성");
-    agentLog("concept", `착장 후보 ${originalCandidates.length}개 생성 완료`);
-
-    agentLog("evaluate", "1차 후보 평가 Tool 시작", "local heuristic + objective verifier");
-    const round1 = rankEvaluations(
-      localEvaluateCandidates(keyword, trend, originalCandidates, weatherSnapshot, 1),
-    );
-    if (round1.length < 5) throw new Error("1차 후보 평가에 실패했어요.");
-    agentLog("evaluate", "1차 후보 평가 완료");
-
-    agentLog("evaluate", "실패 원인 기반 수정 + 재평가 Tool 시작", `repair_and_re_evaluate · ${NVIDIA_PLAN_MODEL}`);
-    let repairedResult: { candidates: Concept[]; evaluations: Evaluation[] };
-    try {
-      repairedResult = await repairAndEvaluateCandidates(
-        keyword,
-        trend,
-        originalCandidates,
-        round1,
-        weatherSnapshot,
-        false,
-        intentSummary,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "알 수 없는 오류";
-      agentLog("evaluate", `수정+재평가 실패: ${message}`, "strict repair and re-evaluation");
-      throw new Error(`후보 수정과 재평가를 완료하지 못했습니다. ${message}`);
-    }
-    const firstDiversity = candidateSimilaritySummary(repairedResult.candidates);
-    if (firstDiversity.maximum >= 0.5) {
-      agentLog(
-        "evaluate",
-        `후보 간 유사도 ${firstDiversity.maximum} 감지: 다양성 보강 재검수 시작`,
-        "diversity repair",
-      );
-      try {
-        repairedResult = await repairAndEvaluateCandidates(
-          keyword,
-          trend,
-          repairedResult.candidates,
-          repairedResult.evaluations,
-          weatherSnapshot,
-          true,
-          intentSummary,
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "알 수 없는 오류";
-        agentLog("evaluate", `다양성 보강 재검수 실패: ${message}`, "strict diversity repair");
-        throw new Error(`후보 간 차이를 충분히 만들지 못했습니다. ${message}`);
-      }
-    }
-    const candidateBase = repairedResult.candidates;
-    assertCandidateSet(candidateBase, keyword, intentSummary, "수정·재평가", true);
-    agentLog("evaluate", "수정 후보 재평가 완료");
-
-    const normalizedRound2 = repairedResult.evaluations;
-    if (normalizedRound2.length !== 5) throw new Error("사용자 맥락을 반영한 5개 후보의 재평가를 완료하지 못했습니다.");
-    const finalConcepts = selectFinalConcepts(candidateBase, normalizedRound2);
-    const round2 = applyFinalDecisions(normalizedRound2, finalConcepts);
-
-    if (finalConcepts.length < 2) throw new Error("최종 후보 선택에 실패했어요.");
-    agentLog("evaluate", `재평가 완료: 최종 ${finalConcepts.map((item) => item.name).join(" / ")}`);
+    if (finalConcepts.length < 2) throw new Error("요청 조건을 지키는 착장 2개를 준비하지 못했어요. 제외 조건을 조정해주세요.");
+    agentLog("evaluate", `${evaluationStage === "repaired" ? "보완 후보" : "확보한 후보"}로 최종 선택: ${finalConcepts.map((item) => item.name).join(" / ")}`);
 
     const finalSimilarity = conceptSimilarity(finalConcepts[0], finalConcepts[1]);
     return NextResponse.json({
       originalCandidates,
       round1,
-      repairSummary: [],
+      repairSummary: warnings,
+      planStatus: warnings.length ? "partial" : "complete",
+      evaluationStage,
+      candidateSource,
+      warnings,
       repairedCandidates: candidateBase,
       round2,
       finalConcepts,

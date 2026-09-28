@@ -30,3 +30,6 @@ yarn-error.log*
 # --- Editors ---
 .vscode/
 .idea/
+
+# Isolated validation output
+/.next-quality/

@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
+import { CORE_GARMENT_POLICY, sanitizeCoreText } from "@/lib/garments";
 import { getNvidiaClient, NVIDIA_FAST_MODEL } from "@/lib/nvidia";
 import { agentLog } from "@/lib/log";
 import { parseJsonObjectFromText } from "@/lib/openai";
+import {
+  buildDirectConsultationReply,
+  isGenericConsultationReply,
+  type DirectConsultationInput,
+} from "@/lib/consultation-replies";
 
 type ConsultationStage = "place" | "fit" | "material";
 
@@ -53,20 +59,14 @@ function stageInstruction(stage: ConsultationStage) {
   return "날씨·계절·장소 무드에 맞는 소재, 표면감, 패턴, 레이어링을 추천해. 사용자가 소재를 정하지 않았다면 가장 어울리는 조합을 먼저 제시하고, 기능성과 패션성을 한쪽으로 과하게 몰지 마.";
 }
 
-function missingInformation(stage: ConsultationStage, keyword: string, feedback: string[], trend: string) {
-  const context = `${keyword} ${feedback.join(" ")} ${trend}`;
-  if (stage === "place") {
-    if (!/결혼|장례|회의|면접|데이트|여행|카페|공연|식당|바|출근|약속|친구/.test(context)) return "약속의 성격";
-    if (!/실내|실외|이동|걷|차|대중교통/.test(context)) return "실내외 이동량";
-    if (!/차분|편안|정돈|격식|캐주얼|개성|세련|활동/.test(context)) return "원하는 분위기의 우선순위";
-    return "";
+function missingInformation(stage: ConsultationStage, keyword: string, feedback: string[]) {
+  // Fit and material preferences are optional: absence is permission to recommend,
+  // not a reason to ask the same question in another wording.
+  const context = `${keyword} ${feedback.join(" ")}`;
+  if (stage === "place" && !/결혼|장례|회의|면접|데이트|여행|카페|공연|식당|출근|약속|친구|일상|캐주얼/.test(context)) {
+    return "격식 있는 행사인지 일상복인지가 실제 선택을 바꿀 때만 약속의 성격을 한 번 확인";
   }
-  if (stage === "fit") {
-    if (!/오버|여유|편안|슬림|단정|깔끔|와이드|스트레이트|테이퍼드/.test(context)) return "실루엣의 여유 정도";
-    return "상의와 하의의 비율 대비";
-  }
-  if (!/데님|울|니트|코튼|리넨|나일론|가죽|레더|새틴|메시|메쉬|패턴|체크|스트라이프|광택|질감/.test(context)) return "가장 강조할 소재나 표면감";
-  return "레이어링의 가벼움과 질감 균형";
+  return "추가 질문 없이 현재 조건에 맞는 구체적인 조합 추천";
 }
 
 function cleanVisibleText(value: unknown) {
@@ -85,6 +85,7 @@ function cleanQuestion(value: unknown) {
 }
 
 export async function POST(req: Request) {
+  let fallbackInput: DirectConsultationInput | null = null;
   try {
     const body = await req.json();
     const keyword = asText(body?.keyword);
@@ -104,7 +105,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "상담에 필요한 입력이 부족합니다." }, { status: 400 });
     }
 
-    const missing = missingInformation(stage, keyword, feedback, trend);
+    fallbackInput = { keyword, feedback, stage, trend };
+    const missing = missingInformation(stage, keyword, feedback);
+    const delegated = /추천해|알아서|판단해|골라|맡길/.test(latestFeedback);
 
     const response = await getNvidiaClient().chat.completions.create(
       {
@@ -119,12 +122,17 @@ export async function POST(req: Request) {
             content:
               "너는 DDP PARK SAJANG의 한국어 퍼스널 스타일링 상담 Tool이야. 응답은 반드시 JSON 객체로 바로 시작하고 JSON 객체 하나만 반환해: {\"reply\": \"실제 한국어 답변\", \"question\": \"실제 한국어 질문 또는 빈 문자열\"}. " +
               "JSON 예시의 타입 표기(string 등)를 그대로 출력하지 말고, 분석 과정·생각 과정·작성 메모도 출력하지 마. reply는 핵심 추천과 사용자 요구 반영을 1~2문장으로, question은 짧은 확인 질문 1문장으로 작성해. 전체 답변은 최대 2문장으로 끝내. " +
+              CORE_GARMENT_POLICY + " " +
+              "첫 문장에서 이번 사용자 요청에 바로 답해. '말씀하신 방향을 반영할게요', '상황에 맞게 추천할게요'로 끝내지 말고 어떤 옷을 어떻게 조합할지 말해. " +
+              "예: 이동이 많아요 → '스니커즈와 여유 있는 팬츠로 맞추고, 벗어 들기 쉬운 얇은 겉옷을 더한 안도 추천해요.' 예: 흰 티에 검정 데님 자켓 추가 → '흰 티는 유지하고 검정 데님 재킷을 위에 더하는 조합을 추천해요.' " +
+              "사용자가 여러 대안을 주고 판단을 맡기면 조건에 맞는 하나를 선택하고 이유를 한 번만 말해. 같은 요청을 더 구체적으로 다시 말하라고 요구하지 마. " +
+              "이 답변은 아직 추천안이며 이미지나 상품을 이미 바꿨다고 말하지 마. '바꿨어요/추가했어요/검증했어요' 대신 '추천해요/맞출게요'를 사용해. 불확실성은 실제 필요한 항목에만 한 번 알리고, 일반적인 권유까지 '가능할 수 있습니다/고려해볼 수 있습니다'로 흐리지 마. " +
               "실제 코디 스타일리스트가 옆에서 말하듯 자연스럽고 따뜻한 존댓말을 사용해. 보고서, 시스템 안내, 프롬프트 설명, '컨텍스트', '후보 생성', '분석 결과' 같은 내부 용어는 사용하지 마. " +
               "출처, URL, 마크다운, 영어 항목명, 과장된 체형 판단, 장황한 수식어는 사용하지 마. " +
               "키·몸무게 숫자와 체형 평가를 불필요하게 반복하지 말고, 필요할 때는 비율과 핏의 장점으로만 표현해. 영어 표현이 섞이면 자연스러운 한국어로 바꿔. " +
               "입력의 장소명을 다른 도시나 서울 전체로 바꾸지 말고, 확실하지 않은 지역 정보는 단정하지 마. " +
               "사용자가 이번 답변에서 새로 말한 소재·색상·핏·기장·아이템만 짧게 인정하고 다음 후보에 어떻게 반영할지 말해. " +
-              "날씨·상황과 충돌하면 사용자의 요청을 몰래 바꾸지 말고, 왜 다른 대안이 더 적합할 수 있는지 짧게 설명한 뒤 원래 요청을 유지할지 두 방향을 모두 볼지 질문해. " +
+              "날씨·상황과 충돌해도 사용자가 정한 아이템을 몰래 바꾸지 마. 요청을 유지하면서 겉옷을 벗어 들기 같은 구체적인 대응을 먼저 추천하고, 양립할 수 없는 필수 조건일 때만 한 번 질문해. 날씨가 미확인이라면 기온이나 강수를 만들어내지 마. " +
               "사용자가 두 방향 모두 보겠다고 하면 후보를 두 그룹으로 나누도록 명확히 기록해. " +
               "사용자가 이미 말한 날짜·장소·성별·키·몸무게·핏·소재를 다시 나열하지 마. 이번 단계의 이전 설명도 반복하지 마. 사용자가 '좋아'라고 하면 직전 제안을 승인한 것으로 이해하고 같은 설명을 반복하지 말고 다음 단계의 추천으로 넘어가. 사용자가 특정 조건을 말하지 않았다면 좋은 기본안을 먼저 제안하고, 결과를 크게 바꿀 때만 선택을 물어봐. 필요한 정보가 여러 개여도 이번에는 가장 중요한 하나만 물어봐. 현재 입력과 피드백으로 해당 단계가 이미 정해졌다면 question은 빈 문자열로 반환해. " +
               "material 단계에서 사용자의 답변이 핏이나 실루엣에 관한 내용이면 그 방향은 이미 확정된 것으로 처리하고 다시 설명하지 마. 소재·패턴·레이어링만 새로 제안해. " +
@@ -145,12 +153,14 @@ export async function POST(req: Request) {
           },
         ],
       } as never,
-      { signal: AbortSignal.timeout(45_000) },
+      { signal: AbortSignal.timeout(25_000) },
     );
     const rawContent = response.choices[0]?.message?.content;
     const parsed = parseJsonObjectFromText(rawContent);
-    const reply = cleanVisibleText(parsed.reply);
-    const question = cleanQuestion(parsed.question);
+    const rawReply = sanitizeCoreText(cleanVisibleText(parsed.reply));
+    const usedDirectReply = !rawReply || isGenericConsultationReply(rawReply);
+    const reply = usedDirectReply ? buildDirectConsultationReply(fallbackInput) : rawReply;
+    const question = delegated || usedDirectReply ? "" : sanitizeCoreText(cleanQuestion(parsed.question));
     const message = [reply, question].filter(Boolean).join(" ").trim();
     if (!message) throw new Error("상담 응답이 비어 있습니다.");
     agentLog("trend", `스타일 상담 Tool 완료: ${stage}`);
@@ -158,10 +168,21 @@ export async function POST(req: Request) {
       message,
       options: question ? optionsForStage(stage, keyword, trend) : [],
       allowQuickApply: !question,
+      responseSource: usedDirectReply ? "local_recommendation" : "model",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "스타일 상담에 실패했습니다.";
-    agentLog("trend", `스타일 상담 Tool 실패: ${message}`, "strict consultation");
-    return NextResponse.json({ error: message }, { status: 500 });
+    agentLog("trend", `스타일 상담 연결 지연: ${message}`, "consultation fallback");
+    if (fallbackInput) {
+      return NextResponse.json({
+        message: buildDirectConsultationReply(fallbackInput),
+        options: [],
+        allowQuickApply: true,
+        degraded: true,
+        responseSource: "local_recommendation",
+        notice: "상담 응답을 받지 못해 입력 조건으로 기본 조합을 제안합니다.",
+      });
+    }
+    return NextResponse.json({ error: "상담 입력을 읽지 못했습니다." }, { status: 400 });
   }
 }

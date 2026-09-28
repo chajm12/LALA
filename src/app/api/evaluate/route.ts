@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { CORE_GARMENT_POLICY, sanitizeCoreConcept, sanitizeCoreText } from "@/lib/garments";
 import { parseJsonContent } from "@/lib/openai";
 import { getNvidiaClient, NVIDIA_TEXT_MODEL } from "@/lib/nvidia";
 import { agentLog } from "@/lib/log";
@@ -122,7 +123,7 @@ async function repairCandidates(
       {
         role: "system",
         content:
-          "너는 퍼스널 스타일링 수정 에이전트야. 모든 출력은 반드시 한국어로 작성해. 후보 개수와 id는 유지하되, 평가 실패 원인과 수정 계획을 반영해 각 후보의 아이템, 소재, 색감, 기장, 핏을 보정해. 최종 룩북 이미지는 상위 2개만 생성되지만, 여기서는 모든 후보를 수정한다. 트렌드 감도는 유지하되 날씨/장소/상황/체형과 충돌하면 조정한다. repairSummary에는 후보별로 어떤 실패 원인을 어떻게 고쳤는지 구체적으로 써. JSON 스키마: { repairSummary: string[], concepts: Concept[] }.",
+          "너는 퍼스널 스타일링 수정 에이전트야. 모든 출력은 반드시 한국어로 작성해. 후보 개수와 id는 유지하되, 평가 실패 원인과 수정 계획을 반영해 각 후보의 아이템, 소재, 색감, 기장, 핏을 보정해. 최종 룩북 이미지는 상위 2개만 생성되지만, 여기서는 모든 후보를 수정한다. 트렌드 감도는 유지하되 날씨/장소/상황/체형과 충돌하면 조정한다. repairSummary에는 후보별로 어떤 실패 원인을 어떻게 고쳤는지 구체적으로 써. JSON 스키마: { repairSummary: string[], concepts: Concept[] }." + CORE_GARMENT_POLICY,
       },
       {
         role: "user",
@@ -132,8 +133,8 @@ async function repairCandidates(
     } as never);
   const parsed = parseJsonContent(completion.choices[0]?.message?.content);
   return {
-    repairSummary: Array.isArray(parsed.repairSummary) ? (parsed.repairSummary as string[]) : [],
-    concepts: Array.isArray(parsed.concepts) ? (parsed.concepts as Concept[]) : candidates,
+    repairSummary: Array.isArray(parsed.repairSummary) ? (parsed.repairSummary as string[]).map(sanitizeCoreText).filter(Boolean) : [],
+    concepts: Array.isArray(parsed.concepts) ? (parsed.concepts as Concept[]).map(sanitizeCoreConcept) : candidates,
   };
 }
 
@@ -176,7 +177,7 @@ async function explainFinalSelection(
 export async function POST(req: Request) {
   try {
     const { keyword, trend, candidates } = await req.json();
-    const concepts: Concept[] = Array.isArray(candidates) ? candidates : [];
+    const concepts: Concept[] = Array.isArray(candidates) ? candidates.map(sanitizeCoreConcept) : [];
     if (concepts.length < 2) {
       throw new Error("평가할 후보가 부족합니다.");
     }

@@ -1,8 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { buildDirectConsultationReply } from "@/lib/consultation-replies";
 import LoadingScreen, { type LoadingPhase } from "@/components/LoadingScreen";
 import { AGENTKIT_TOOLS, AGENTKIT_TRACE_STEPS } from "@/lib/agentkit";
+import { conceptFingerprint, createShoppingRequestRegistry, mergeShoppingProducts, patchMatchingVariant, restoredShoppingState, withShoppingDeadline } from "@/lib/shopping-client";
+import { isSpecificProductUrl } from "@/lib/shopping-products";
+import { sanitizeCoreConcept, coreGarmentCategory } from "@/lib/garments";
+import { normalizeGarmentSpecs, type GarmentSpec } from "@/lib/garment-specs";
 
 type Concept = {
   name: string;
@@ -13,6 +18,7 @@ type Concept = {
   materials: string[];
   id?: string;
   outfitItems?: string[];
+  garmentSpecs?: GarmentSpec[];
   bodyProfile?: string;
   fitStrategy?: string;
   stylingReason?: string;
@@ -39,6 +45,10 @@ type Evaluation = {
 };
 
 type EvaluationProcess = {
+  planStatus?: "complete" | "partial";
+  evaluationStage?: "initial" | "repaired" | "fallback";
+  candidateSource?: "model" | "local_fallback";
+  warnings?: string[];
   originalCandidates: Concept[];
   round1: Evaluation[];
   repairSummary: string[];
@@ -48,12 +58,18 @@ type EvaluationProcess = {
 };
 
 type ShoppingLink = {
+  kind?: "product" | "search";
   category?: string;
   item: string;
   title: string;
   url: string;
   source: string;
   reason: string;
+  imageUrl?: string;
+  price?: string;
+  visualStatus?: "verified" | "unverified";
+  visualDifferences?: string[];
+  verificationNotice?: string;
 };
 
 type Variant = {
@@ -61,12 +77,14 @@ type Variant = {
   contradictionIssue: string | null;
   imageUrl: string | null;
   lookbookVerified: boolean;
+  imageGarmentSpecs: GarmentSpec[];
   lookbookMismatches: string[];
   lookbookRetried: boolean;
   lookbookError: string | null;
   finalMaterials: string[] | null;
   shoppingLinks: ShoppingLink[];
   shoppingError: string | null;
+  shoppingMissingItems: string[];
   shoppingLoading: boolean;
 };
 
@@ -193,7 +211,7 @@ function normalizeConcept(value: unknown, index = 0): Concept | null {
     .replace(/\s*로\s+(?:남성|여성)\s*\d+안(?:을|를)?\s*제안해요\.?/g, "룩을 제안해요.")
     .replace(/\s+(?:남성|여성)\s*\d+안(?:을|를)?\s*제안해요\.?/g, " 룩을 제안해요.")
     .trim();
-  return {
+  return sanitizeCoreConcept({
     id: typeof item.id === "string" ? item.id : `look_${String(index + 1).padStart(2, "0")}`,
     name: String(item.name ?? `후보 ${index + 1}`),
     description,
@@ -202,10 +220,11 @@ function normalizeConcept(value: unknown, index = 0): Concept | null {
     targetCustomer: String(item.targetCustomer ?? "남성"),
     materials: asStringArray(item.materials),
     outfitItems: asStringArray(item.outfitItems),
+    garmentSpecs: normalizeGarmentSpecs(item.garmentSpecs),
     bodyProfile: typeof item.bodyProfile === "string" ? item.bodyProfile : undefined,
     fitStrategy: typeof item.fitStrategy === "string" ? item.fitStrategy : undefined,
     stylingReason: typeof item.stylingReason === "string" ? item.stylingReason : undefined,
-  };
+  });
 }
 
 function asConceptArray(value: unknown): Concept[] {
@@ -256,14 +275,21 @@ function asShoppingLinks(value: unknown): ShoppingLink[] {
       if (!item || typeof item !== "object") return null;
       const link = item as Record<string, unknown>;
       const url = typeof link.url === "string" ? link.url : "";
-      if (!/^https?:\/\//.test(url)) return null;
+      if (link.kind === "search" || !isSpecificProductUrl(url)) return null;
+      if (!coreGarmentCategory(`${String(link.category ?? "")}: ${String(link.item ?? "")}`)) return null;
       const normalizedLink: ShoppingLink = {
+        kind: link.kind === "search" ? "search" : "product",
         category: typeof link.category === "string" ? link.category : undefined,
         item: String(link.item ?? "추천 아이템"),
         title: String(link.title ?? "비슷한 상품"),
         url,
         source: String(link.source ?? "쇼핑몰"),
         reason: String(link.reason ?? "최종 착장과 유사한 아이템이에요."),
+        imageUrl: typeof link.imageUrl === "string" && /^https:\/\//.test(link.imageUrl) ? link.imageUrl : undefined,
+        price: typeof link.price === "string" ? link.price : undefined,
+        visualStatus: link.visualStatus === "verified" ? "verified" : "unverified",
+        visualDifferences: asStringArray(link.visualDifferences),
+        verificationNotice: typeof link.verificationNotice === "string" ? link.verificationNotice : undefined,
       };
       return normalizedLink;
     })
@@ -279,9 +305,10 @@ function normalizeVariant(value: unknown, index: number): Variant | null {
     concept,
     contradictionIssue: typeof item.contradictionIssue === "string" ? item.contradictionIssue : null,
     imageUrl: typeof item.imageUrl === "string" ? item.imageUrl : null,
+    imageGarmentSpecs: typeof item.imageUrl === "string" ? normalizeGarmentSpecs(item.imageGarmentSpecs) : [],
     lookbookVerified: typeof item.lookbookVerified === "boolean"
       ? item.lookbookVerified
-      : Boolean(item.verified),
+      : item.verified === true,
     lookbookMismatches: asStringArray(item.lookbookMismatches ?? item.mismatches),
     lookbookRetried: typeof item.lookbookRetried === "boolean"
       ? item.lookbookRetried
@@ -296,12 +323,17 @@ function normalizeVariant(value: unknown, index: number): Variant | null {
       : null,
     shoppingLinks: asShoppingLinks(item.shoppingLinks),
     shoppingError: typeof item.shoppingError === "string" ? item.shoppingError : null,
-    shoppingLoading: Boolean(item.shoppingLoading),
+    shoppingMissingItems: asStringArray(item.shoppingMissingItems),
+    shoppingLoading: false,
   };
 }
 
 function normalizeEvaluationProcess(value: Record<string, unknown>): EvaluationProcess {
   return {
+    planStatus: value.planStatus === "partial" ? "partial" : "complete",
+    evaluationStage: value.evaluationStage === "initial" || value.evaluationStage === "fallback" ? value.evaluationStage : "repaired",
+    candidateSource: value.candidateSource === "local_fallback" ? "local_fallback" : "model",
+    warnings: asStringArray(value.warnings),
     originalCandidates: asConceptArray(value.originalCandidates),
     round1: asEvaluationArray(value.round1),
     repairSummary: Array.isArray(value.repairSummary) ? (value.repairSummary as string[]) : [],
@@ -322,6 +354,7 @@ function formatDateLabel(value: unknown) {
 }
 
 function weatherCodeLabel(value: unknown) {
+  if (value === null || value === undefined) return "날씨 정보 미확인";
   const code = Number(value);
   if (!Number.isFinite(code)) return "날씨 정보";
   if (code === 0) return "맑음";
@@ -341,7 +374,8 @@ function buildWeatherMessage(weather: unknown) {
   const max = typeof forecast?.temperatureMax === "number" ? forecast.temperatureMax : null;
   const min = typeof forecast?.temperatureMin === "number" ? forecast.temperatureMin : null;
   const location = weatherRecord(snapshot?.location);
-  const locationName = String(location?.query ?? location?.name ?? "입력 지역");
+  const requestedLocation = String(location?.query ?? location?.name ?? "입력 지역");
+  const locationName = location?.resolution === "parent_region" ? `${requestedLocation} (${location.name} 기준 예보)` : requestedLocation;
   const dateLabel = formatDateLabel(snapshot?.date);
   const weatherLabel = weatherCodeLabel(forecast?.weatherCode);
 
@@ -349,7 +383,7 @@ function buildWeatherMessage(weather: unknown) {
     return `${dateLabel} ${locationName}은 ${weatherLabel}, 최고 ${max ?? "미상"}°C·최저 ${min ?? "미상"}°C, 강수량 ${precipitation}mm 기준으로 볼게요. 비에 대응하는 가벼운 레이어를 우선하되 원하는 분위기는 다음 단계에서 조정할 수 있어요.`;
   }
   if (forecastAvailable && max !== null && min !== null) {
-    return `${dateLabel} ${locationName}은 ${weatherLabel}, 최고 ${max}°C·최저 ${min}°C, 강수량 ${precipitation ?? 0}mm·최대풍속 ${forecast?.windSpeedMax ?? "미상"}m/s 기준입니다. 일교차에 맞춘 조절 가능한 레이어를 우선할게요.`;
+    return `${dateLabel} ${locationName}은 ${weatherLabel}, 최고 ${max}°C·최저 ${min}°C, 강수량 ${precipitation ?? "미상"}mm·최대풍속 ${forecast?.windSpeedMax ?? "미상"}m/s 기준입니다. 일교차에 맞춘 조절 가능한 레이어를 우선할게요.`;
   }
   return `${dateLabel} ${locationName}의 단기 예보 수치는 아직 확정할 수 없어 ${season} 계절감을 중심으로 볼게요. 날씨가 확정되지 않은 부분은 과한 기능성보다 조절 가능한 레이어링으로 제안하겠습니다.`;
 }
@@ -399,8 +433,8 @@ function buildInitialPlaceQuestion(keyword: string, intent?: UserIntent | null) 
   };
 }
 
-function buildReadyMessage() {
-  return "말씀해주신 방향을 반영해 서로 다른 5가지 룩을 준비할게요. 후보를 확인한 뒤 원하는 룩을 골라주세요.";
+function buildReadyMessage(keyword: string, feedback: string[], trend: string) {
+  return buildDirectConsultationReply({ keyword, feedback, trend, stage: "material" });
 }
 
 function friendlyPlanningError(value: unknown) {
@@ -411,11 +445,12 @@ function friendlyPlanningError(value: unknown) {
   return message || "후보를 준비하지 못했어요.";
 }
 
-async function postJson(url: string, body: unknown) {
+async function postJson(url: string, body: unknown, signal?: AbortSignal) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
 
   // A route can fail before it ever writes a JSON body (uncaught throw,
@@ -457,7 +492,8 @@ function AgentTracePanel({
       </p>
       <div className="mt-4 flex flex-col gap-3">
         {AGENTKIT_TRACE_STEPS.map((item, index) => {
-          const isDone = activeIndex > index;
+          const incomplete = (item.key === "evaluate" || item.key === "concept") && evaluationProcess?.planStatus === "partial";
+          const isDone = activeIndex > index && !incomplete;
           const isActive = activeIndex === index;
           return (
             <div
@@ -478,12 +514,12 @@ function AgentTracePanel({
                       : "h-5 w-5 rounded-full border border-zinc-300 dark:border-zinc-700"
                   }
                 >
-                  {isDone ? "✓" : ""}
+                  {incomplete ? "!" : isDone ? "✓" : ""}
                 </span>
                 <p className="text-sm font-medium text-black dark:text-zinc-50">{item.title}</p>
               </div>
               <p className="mt-1 pl-7 text-xs leading-relaxed text-zinc-500 break-keep">
-                {item.detail}
+                {incomplete ? "확보한 후보로 진행했습니다. 보완 미완료 항목은 아래 기록에서 확인할 수 있어요." : item.detail}
                 {item.tool && (
                   <span className="mt-1 block font-mono text-[10px] uppercase tracking-wide text-zinc-400">
                     {AGENTKIT_TOOLS[item.tool].label}
@@ -497,7 +533,7 @@ function AgentTracePanel({
       {evaluationProcess?.round2.length ? (
         <div className="mt-5 border-t border-zinc-200 pt-4 dark:border-zinc-800">
           <p className="text-xs font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
-            실제 Verifier 결과
+            현재 후보의 규칙 기반 평가
           </p>
           <div className="mt-3 grid gap-2 text-xs text-zinc-600 dark:text-zinc-300">
             {[
@@ -575,6 +611,9 @@ export default function Home() {
   const resultsRef = useRef<HTMLElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const activeRunIdRef = useRef<string | null>(null);
+  const [shoppingRequests] = useState(createShoppingRequestRegistry);
+
+  useEffect(() => () => shoppingRequests.cancelAll(), [shoppingRequests]);
 
   useEffect(() => {
     const container = chatScrollRef.current;
@@ -652,14 +691,27 @@ export default function Home() {
       appendTrace({
         type: "tool_result",
         tool: "consult",
-        message: `상담 응답을 확인하지 못했습니다. 후보 생성 전 정확한 사용자 피드백이 필요합니다. ${error instanceof Error ? error.message : "알 수 없는 오류"}`,
+        message: `상담 응답을 확인하지 못했습니다. 후보 생성 전 저장된 요청으로 기본 조합을 제안합니다. ${error instanceof Error ? error.message : "알 수 없는 오류"}`,
       });
       return null;
     }
   }
 
-  function updateVariant(index: number, patch: Partial<Variant>) {
-    setVariants((prev) => prev.map((v, i) => (i === index ? { ...v, ...patch } : v)));
+  function patchCurrentVariant(runId: string | null, fingerprint: string, patch: Partial<Variant> | ((variant: Variant) => Partial<Variant>)) {
+    if (activeRunIdRef.current !== runId) return;
+    setVariants((current) => activeRunIdRef.current === runId ? patchMatchingVariant(current, fingerprint, patch) : current);
+    if (runId) setHistory((current) => current.map((item) => item.id === runId
+      ? { ...item, variants: patchMatchingVariant(item.variants, fingerprint, patch) } : item));
+  }
+
+  function shoppingKey(runId: string | null, concept: Concept) {
+    return `${runId ?? "unsaved"}:${concept.id ?? concept.name}`;
+  }
+
+  function cancelVariantShopping(variant: Variant) {
+    const runId = activeRunIdRef.current;
+    shoppingRequests.cancel(shoppingKey(runId, variant.concept));
+    patchCurrentVariant(runId, conceptFingerprint(variant.concept), { shoppingLoading: false });
   }
 
   function saveHistory(item: SearchHistoryItem) {
@@ -671,6 +723,7 @@ export default function Home() {
   }
 
   function resetForNewSearch() {
+    shoppingRequests.cancelAll();
     setKeyword("");
     setChatInput("");
     setScreen("search");
@@ -705,12 +758,16 @@ export default function Home() {
   }
 
   function restoreHistory(item: SearchHistoryItem) {
+    shoppingRequests.cancelAll();
+    activeRunIdRef.current = item.id;
     setKeyword(item.keyword);
     setTrend(item.trend);
     setPlaceContext(item.placeContext ?? null);
     setUserIntent(null);
     setFeedback(item.feedback ?? []);
-    setVariants(item.variants);
+    const restoredVariants = item.variants.map(normalizeVariant).filter((item): item is Variant => item !== null);
+    setVariants(restoredShoppingState(restoredVariants));
+    updateHistoryVariants(item.id, restoredShoppingState(restoredVariants));
     setSelectedRefineIndex(0);
     setRefineInput("");
     setRefinementMessages([]);
@@ -730,49 +787,53 @@ export default function Home() {
     setIsTraceOpen(false);
   }
 
-  async function runShoppingWork(
-    runKeyword: string,
-    concept: Concept,
-    index: number,
-  ): Promise<Partial<Variant>> {
-    const shoppingPatch: Partial<Variant> = {};
-    updateVariant(index, { shoppingLoading: true, shoppingError: null });
-
-    await postJson(AGENTKIT_TOOLS.agent.endpoint, { action: "shopping", keyword: runKeyword, concept })
-      .then((shoppingData) => {
-        appendAgentTrace(shoppingData.trace);
-        const links = asShoppingLinks(shoppingData.links);
-        Object.assign(shoppingPatch, {
-          shoppingLinks: links,
-          shoppingError: links.length ? null : "조건에 맞는 직접 상품 상세 링크를 찾지 못했어요.",
-          shoppingLoading: false,
-        });
-        updateVariant(index, shoppingPatch);
-      })
-      .catch((e) => {
-        Object.assign(shoppingPatch, {
-          shoppingError: e instanceof Error ? e.message : "구매 링크 검색 실패",
-          shoppingLoading: false,
-        });
-        updateVariant(index, shoppingPatch);
-      });
-
-    return shoppingPatch;
-  }
-
   async function findShoppingLinks(index: number) {
     const variant = variants[index];
-    if (!variant || variant.shoppingLoading) return;
-    const patch = await runShoppingWork(keyword.trim(), variant.concept, index);
-    const nextVariants = variants.map((item, itemIndex) =>
-      itemIndex === index ? { ...item, ...patch } : item,
-    );
-    setVariants(nextVariants);
-    if (activeRunIdRef.current) updateHistoryVariants(activeRunIdRef.current, nextVariants);
+    if (!variant || variant.shoppingLoading || isBusy) return;
+    const runId = activeRunIdRef.current;
+    const fingerprint = conceptFingerprint(variant.concept);
+    // This guard is synchronous, so a second click before React renders cannot
+    // create another request for the same card.
+    const request = shoppingRequests.begin(shoppingKey(runId, variant.concept), fingerprint);
+    if (!request) return;
+    patchCurrentVariant(runId, fingerprint, { shoppingLoading: true, shoppingError: null });
+    try {
+      const data = await withShoppingDeadline(
+        (signal) => postJson(AGENTKIT_TOOLS.agent.endpoint, {
+          action: "shopping", keyword: keyword.trim(), concept: variant.concept,
+          imageUrl: variant.imageUrl, imageGarmentSpecs: variant.imageGarmentSpecs,
+        }, signal),
+        request.controller,
+      );
+      if (!shoppingRequests.isCurrent(request) || activeRunIdRef.current !== runId) return;
+      appendAgentTrace(data.trace);
+      const links = asShoppingLinks(data.links);
+      patchCurrentVariant(runId, fingerprint, (current) => {
+        const merged = mergeShoppingProducts(current.shoppingLinks, links, asStringArray(data.missingItems), asStringArray(data.searchedCategories), asStringArray(data.rejectedProductUrls));
+        return {
+          ...merged,
+          shoppingError: merged.shoppingMissingItems.length || !merged.shoppingLinks.length
+            ? typeof data.warning === "string" ? data.warning : "일부 품목의 개별 상품을 아직 찾지 못했어요. 다시 찾기를 눌러 재시도할 수 있어요."
+            : null,
+        };
+      });
+    } catch (error) {
+      if (shoppingRequests.isCurrent(request)) {
+        patchCurrentVariant(runId, fingerprint, {
+          shoppingError: error instanceof Error ? error.message : "상품 검색을 완료하지 못했어요. 다시 시도해 주세요.",
+        });
+      }
+    } finally {
+      if (shoppingRequests.isCurrent(request)) {
+        patchCurrentVariant(runId, fingerprint, { shoppingLoading: false });
+        shoppingRequests.finish(request);
+      }
+    }
   }
 
   async function startConversation() {
     if (!keyword.trim() || isBusy) return;
+    shoppingRequests.cancelAll();
     const runKeyword = keyword.trim();
     const runStartedAt = getTimestamp();
     activeRunIdRef.current = `${runStartedAt}`;
@@ -883,21 +944,13 @@ export default function Home() {
         ? nextStage === "fit" ? "fit" : "material"
         : "material";
     const shouldConsult = isRecommendationRequest || currentStage === "ready" || nextStage !== "ready" || (currentStage === "material" && !isAffirmative);
-    const response = shouldConsult ? await requestConsultation(consultationStage, nextFeedback) : null;
-    if (shouldConsult && !response) {
-      const previousQuestion = [...chatMessages]
-        .reverse()
-        .find((message) => message.role === "assistant" && message.stage === currentStage && message.options?.length);
-      setError("상담 연결이 잠시 지연됐어요. 입력 내용은 저장되어 있습니다.");
-      appendAssistant(
-        "상담 연결이 잠시 지연됐어요. 입력 내용은 저장되어 있으니 같은 단계의 선택을 다시 누르거나 직접 한 번만 보내주세요.",
-        currentStage,
-        previousQuestion?.options,
-      );
-      setConversationStage(currentStage);
-      setIsBusy(false);
-      return;
-    }
+    const response = shouldConsult
+      ? await requestConsultation(consultationStage, nextFeedback) ?? {
+          message: buildDirectConsultationReply({ keyword, feedback: nextFeedback, trend: trend ?? "", stage: consultationStage }),
+          options: [],
+          allowQuickApply: true,
+        }
+      : null;
     const acceptedRecommendation = isAffirmative && previousAssistant?.allowQuickApply && previousAssistant.text
       ? `에이전트 추천 반영: ${previousAssistant.text}`
       : null;
@@ -911,25 +964,25 @@ export default function Home() {
     let options: string[] | undefined;
     let logLabel = "스타일 방향";
     if (currentStage === "place") {
-      assistantText = nextStage === "ready" ? buildReadyMessage() : response?.message ?? "";
+      assistantText = response?.message || buildReadyMessage(keyword, planningFeedback, trend ?? "");
       assistantStage = isRecommendationRequest ? consultationStage : nextStage === "ready" ? "ready" : consultationStage;
       options = nextStage === "ready" ? [] : response?.options ?? [];
       logLabel = consultationStage === "fit" ? "핏·실루엣" : "소재·레이어링";
       setConversationStage(effectiveStage);
     } else if (currentStage === "fit") {
-      assistantText = nextStage === "ready" ? buildReadyMessage() : response?.message ?? "";
+      assistantText = response?.message || buildReadyMessage(keyword, planningFeedback, trend ?? "");
       assistantStage = isRecommendationRequest ? consultationStage : nextStage === "ready" ? "ready" : consultationStage;
       options = nextStage === "ready" ? [] : response?.options ?? [];
       logLabel = "소재·레이어링";
       setConversationStage(effectiveStage);
     } else if (currentStage === "material") {
-      assistantText = response?.message || buildReadyMessage();
+      assistantText = response?.message || buildReadyMessage(keyword, planningFeedback, trend ?? "");
       assistantStage = response ? "material" : "ready";
       options = response?.options ?? [];
       logLabel = "소재·레이어링";
       setConversationStage(effectiveStage);
     } else {
-      assistantText = response?.message || buildReadyMessage();
+      assistantText = response?.message || buildReadyMessage(keyword, planningFeedback, trend ?? "");
       logLabel = "최종 스타일 방향";
     }
     appendAssistant(assistantText, assistantStage, options, response?.allowQuickApply ?? false);
@@ -949,7 +1002,10 @@ export default function Home() {
     const current = variants[selectedRefineIndex];
     if (!text || !current || isBusy) return;
     const conceptId = current.concept.id ?? current.concept.name;
-    const previous = current;
+    cancelVariantShopping(current);
+    const runId = activeRunIdRef.current;
+    const fingerprint = conceptFingerprint(current.concept);
+    const previous = { ...current, shoppingLoading: false };
     setRefineInput("");
     appendRefinementMessage("user", text);
     setIsBusy(true);
@@ -958,18 +1014,30 @@ export default function Home() {
       const data = await postJson(AGENTKIT_TOOLS.agent.endpoint, {
         action: "refine",
         concept: current.concept,
+        imageUrl: current.imageUrl, imageGarmentSpecs: current.imageGarmentSpecs,
         feedback: text,
         trend,
         weather,
         evaluation: evaluationProcess?.round2.find((item) => item.id === conceptId),
       });
+      if (data.unchanged === true) {
+        appendAgentTrace(data.trace);
+        appendRefinementMessage("assistant", typeof data.refinementReply === "string" ? data.refinementReply : "현재 룩을 그대로 유지했어요.");
+        return;
+      }
       const nextVariant = normalizeVariant(
         {
           ...current,
           ...data,
           concept: data.concept ?? current.concept,
+          imageGarmentSpecs: data.imageGarmentSpecs ?? [],
+          lookbookVerified: data.verified === true,
+          lookbookMismatches: data.mismatches ?? [],
+          lookbookError: data.error ?? null,
+          lookbookRetried: data.retried === true,
           shoppingLinks: [],
           shoppingError: null,
+          shoppingMissingItems: [],
           shoppingLoading: false,
         },
         selectedRefineIndex,
@@ -979,9 +1047,7 @@ export default function Home() {
         ...previousHistory,
         [conceptId]: [...(previousHistory[conceptId] ?? []), previous].slice(-8),
       }));
-      const nextVariants = variants.map((item, index) => index === selectedRefineIndex ? nextVariant : item);
-      setVariants(nextVariants);
-      if (activeRunIdRef.current) updateHistoryVariants(activeRunIdRef.current, nextVariants);
+      patchCurrentVariant(runId, fingerprint, nextVariant);
       appendAgentTrace(data.trace);
       appendRefinementMessage(
         "assistant",
@@ -1013,11 +1079,10 @@ export default function Home() {
     const stack = variantHistory[conceptId] ?? [];
     const previous = stack.at(-1);
     if (!previous) return;
+    cancelVariantShopping(current);
     const nextStack = stack.slice(0, -1);
-    const nextVariants = variants.map((item, index) => index === selectedRefineIndex ? previous : item);
     setVariantHistory((historyState) => ({ ...historyState, [conceptId]: nextStack }));
-    setVariants(nextVariants);
-    if (activeRunIdRef.current) updateHistoryVariants(activeRunIdRef.current, nextVariants);
+    patchCurrentVariant(activeRunIdRef.current, conceptFingerprint(current.concept), { ...previous, shoppingLoading: false });
     appendRefinementMessage("assistant", "방금 수정한 내용을 되돌리고 이전 룩을 복원했어요.");
   }
 
@@ -1042,10 +1107,12 @@ export default function Home() {
     setError(null);
     setIsBusy(true);
     setStep("concept");
-    appendAssistant("말씀해주신 방향으로 5가지 룩을 준비하고 있어요.", "ready");
+    appendAssistant("상의·하의·신발 조합을 비교하고 있어요. 보완 작업이 지연되면 먼저 만든 후보를 보여드릴게요.", "ready");
     try {
+      const consultationProposal = [...chatMessages].reverse().find((message) => message.role === "assistant" && message.stage !== "weather")?.text ?? "";
       const data = await postJson(AGENTKIT_TOOLS.agent.endpoint, {
         action: "plan",
+        consultationProposal,
         keyword: `${keyword.trim()}${feedbackText}`,
         trend,
         weather,
@@ -1059,7 +1126,7 @@ export default function Home() {
         const rankB = process.round2.find((item) => item.id === b.id)?.rank ?? 999;
         return rankA - rankB;
       });
-      setSelectedCandidateIds(sorted.slice(0, 2).map((item) => item.id ?? item.name));
+      setSelectedCandidateIds((process.finalConcepts.length ? process.finalConcepts : sorted.slice(0, 2)).map((item) => item.id ?? item.name));
       setScreen("candidates");
       setIsBusy(false);
     } catch (e) {
@@ -1087,12 +1154,14 @@ export default function Home() {
       contradictionIssue: null,
       imageUrl: null,
       lookbookVerified: false,
+      imageGarmentSpecs: [],
       lookbookMismatches: [],
       lookbookRetried: false,
       lookbookError: null,
       finalMaterials: null,
       shoppingLinks: [],
       shoppingError: null,
+      shoppingMissingItems: [],
       shoppingLoading: false,
     };
   }
@@ -1101,6 +1170,7 @@ export default function Home() {
     if (!evaluationProcess || !selectedCandidateIds.length || isBusy) return;
     const selected = candidateList().filter((concept) => selectedCandidateIds.includes(concept.id ?? concept.name));
     if (!selected.length) return;
+    shoppingRequests.cancelAll();
     const runId = activeRunIdRef.current;
     setIsBusy(true);
     setStep("variants");
@@ -1128,7 +1198,7 @@ export default function Home() {
           });
           routeTrace.push(...asTraceEvents(data.trace));
           appendAgentTrace(data.trace);
-          return normalizeVariant({ ...concept, ...data, concept }, 0) ?? emptyVariant(concept);
+          return normalizeVariant({ ...concept, ...data, concept: data.concept ?? concept }, 0) ?? emptyVariant(concept);
         } catch (e) {
           return {
             ...emptyVariant(concept),
@@ -1142,7 +1212,7 @@ export default function Home() {
     const lookbookResult: AgentTraceEvent = {
       type: "tool_result",
       tool: "build_lookbook",
-      message: `선택한 ${results.length}개 룩북 생성을 완료했습니다. ${verifiedCount}개가 Vision 검증을 통과했습니다.`,
+      message: `${results.length}개 중 ${results.filter((item) => item.imageUrl).length}개 룩북을 생성했습니다. ${verifiedCount}개는 이미지 비교를 통과했고, 나머지는 확인 상태를 카드에 표시합니다.`,
     };
     appendTrace(lookbookResult);
     const finalTrace = [...agentTrace, lookbookCall, ...routeTrace, lookbookResult];
@@ -1252,6 +1322,12 @@ export default function Home() {
           </p>
         )}
 
+        {v.imageUrl && (
+          <div className="mt-2 border border-zinc-200 bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-600">
+            <p className="font-medium text-zinc-900">{v.lookbookVerified ? "이미지와 착장 명세 비교 완료" : v.lookbookMismatches.length ? "스타일 시안 · 일부 항목 확인 필요" : "스타일 시안 · 이미지 비교 미완료"}</p>
+            {v.lookbookMismatches.length > 0 && <p className="mt-1">{v.lookbookMismatches.join(" / ")}</p>}
+          </div>
+        )}
         <div className="mt-4 border-t border-zinc-200 pt-3">
           <p className="text-sm font-medium text-black dark:text-zinc-50">{v.concept.description}</p>
           <div className="mt-3 grid gap-1 text-xs text-zinc-500">
@@ -1269,24 +1345,37 @@ export default function Home() {
             <button
               type="button"
               onClick={() => findShoppingLinks(variantIndex)}
-              disabled={v.shoppingLoading || !v.imageUrl}
+              disabled={v.shoppingLoading || isBusy}
               className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {v.shoppingLoading ? "검색 중..." : v.shoppingLinks.length ? "다시 찾기" : "비슷한 상품 찾기"}
             </button>
           </div>
+          {v.shoppingLoading && <div className="mt-2 flex items-center justify-between gap-3 text-xs text-zinc-600">
+            <p role="status">이 룩의 상품 상세페이지를 확인하고 있어요.</p>
+            <button type="button" onClick={() => cancelVariantShopping(v)} className="shrink-0 underline">검색 취소</button>
+          </div>}
+          {v.shoppingMissingItems.length > 0 && !v.shoppingLoading && <p className="mt-2 text-xs text-zinc-600">아직 찾지 못한 품목: {v.shoppingMissingItems.join(", ")}</p>}
           {v.shoppingLinks.length > 0 ? (
             <div className="mt-2 flex flex-col gap-2">
+              {v.shoppingError && <p role="status" className="text-xs leading-relaxed text-zinc-600">{v.shoppingError}</p>}
               {v.shoppingLinks.map((link, linkIndex) => (
                 <a key={`${link.url}-${linkIndex}`} href={link.url} target="_blank" rel="noreferrer" className="min-w-0 overflow-hidden rounded-md bg-zinc-50 p-3 text-sm transition hover:bg-zinc-100">
+                  {link.imageUrl && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={link.imageUrl} alt={link.title} loading="lazy" referrerPolicy="no-referrer" className="mb-2 h-28 w-24 border border-zinc-200 bg-white object-contain" />
+                  )}
                   <span className="block break-words text-xs font-semibold text-violet-600">{[link.category, link.item, link.source].filter(Boolean).join(" · ")}</span>
-                  <span className="mt-1 block break-words font-medium leading-snug text-black">{link.title}</span>
-                  <span className="mt-1 block break-keep text-xs leading-relaxed text-zinc-500">{link.reason}</span>
+                  <span className="mt-1 block break-words font-medium leading-snug text-black">상품 후보 · {link.title}</span>
+                  {link.price && <span className="mt-1 block text-xs text-zinc-700">{link.price}</span>}
+                  <span className="mt-1 block text-xs font-medium text-zinc-700">{link.visualStatus === "verified" ? "룩북·상품 사진의 주요 특징 비교 완료" : "상품 후보 · 사진 비교 미완료"}</span>
+                  <span className="mt-1 block break-keep text-xs leading-relaxed text-zinc-500">{link.verificationNotice || link.reason}</span>
+                  {!!link.visualDifferences?.length && <span className="mt-1 block text-xs text-amber-800">{link.visualDifferences.join(" / ")}</span>}
                 </a>
               ))}
             </div>
           ) : v.shoppingError ? (
-            <p className="mt-2 bg-red-50 p-3 text-sm text-red-700">✗ 구매 링크 검색 실패: {v.shoppingError}</p>
+            <p role="status" className="mt-2 bg-zinc-50 p-3 text-sm text-zinc-700">{v.shoppingError}</p>
           ) : v.imageUrl ? (
             <p className="mt-2 text-sm text-zinc-500">버튼을 누르면 이 룩의 착용 아이템과 비슷한 상품을 찾아요.</p>
           ) : null}
@@ -1303,7 +1392,7 @@ export default function Home() {
 
   return (
     <div className={`retro-page font-sans ${isFixedWorkspace ? "h-[100dvh] overflow-hidden" : "min-h-screen"}`}>
-      <LoadingScreen phase={loadingPhase} currentStep={step} />
+      {loadingPhase !== "hidden" && <LoadingScreen phase={loadingPhase} currentStep={step} />}
 
       {screen === "search" && <section className="retro-hero relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden px-5 py-8">
         <header className="style-header w-full max-w-6xl">
@@ -1364,7 +1453,7 @@ export default function Home() {
                   </div>
                   <span className="hidden border border-zinc-200 px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-zinc-400 sm:inline">LIVE</span>
                 </div>
-                <p className="mt-1 text-sm text-zinc-500">날씨와 장소부터 핏·소재까지 한 단계씩 맞춰갑니다.</p>
+                <p className="mt-1 text-sm text-zinc-500">필요한 조건만 짧게 정하고, 준비되면 바로 후보를 볼 수 있어요.</p>
               </div>
               <div ref={chatScrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain py-6 pr-2">
                 {chatMessages.map((message) => {
@@ -1413,8 +1502,8 @@ export default function Home() {
                   <button type="button" onClick={() => void submitConversationFeedback("추천해줘")} disabled={isBusy} className="rounded-none border border-zinc-300 bg-white px-4 py-3 text-sm font-medium text-zinc-700 transition hover:border-zinc-900 hover:text-black disabled:opacity-40">추천해줘</button>
                 )}
               </form>
-              {conversationStage === "ready" && !isBusy && (
-                <button type="button" onClick={() => void generateCandidates()} className="mt-3 w-full rounded-none bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800">5개 후보 생성하기</button>
+              {trend && !isBusy && (
+                <button type="button" onClick={() => void generateCandidates()} className="mt-3 w-full rounded-none bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800">{conversationStage === "ready" ? "5개 후보 생성하기" : "이 조건으로 5개 후보 보기"}</button>
               )}
             </section>
             <aside className="flex min-h-0 max-h-64 flex-col border border-zinc-200 bg-white p-4 lg:max-h-none">
@@ -1426,7 +1515,7 @@ export default function Home() {
                   <article key={item.id} className="border-l-2 border-zinc-300 pl-3">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400">{item.label}</p>
                     <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-700"><span className="font-semibold text-black">{item.userLabel}</span> · {item.userText}</p>
-                    <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-500"><span className="font-semibold text-zinc-700">반영</span> · {item.agentText}</p>
+                    <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-500"><span className="font-semibold text-zinc-700">추천 방향</span> · {item.agentText}</p>
                   </article>
                 )) : <p className="text-xs text-zinc-400">대화가 진행되면 확정된 스타일 방향이 쌓입니다.</p>}
               </div>
@@ -1441,12 +1530,13 @@ export default function Home() {
               </div>
               <div className="shrink-0 border-b border-zinc-200 pb-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">CANDIDATE RANKING</p>
-                <h2 className="mt-2 text-xl font-semibold text-black">5개 후보를 확인하고 룩북으로 볼 안을 골라주세요</h2>
-                <p className="mt-1 text-sm text-zinc-500">재평가 점수 순서로 정렬되어 있습니다. 선택한 {selectedCandidateIds.length}개를 이미지로 생성합니다. 최대 5개까지 선택할 수 있어요.</p>
+                <h2 className="mt-2 text-xl font-semibold text-black">{candidates.length}개 후보에서 룩북으로 볼 안을 골라주세요</h2>
+                <p className="mt-1 text-sm text-zinc-500">{evaluationProcess.evaluationStage === "repaired" ? "보완 후 평가" : "현재 확보한 후보의 평가"} 순서입니다. 선택한 {selectedCandidateIds.length}개를 이미지로 생성합니다.</p>
               </div>
               <div className="mt-5 max-w-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-relaxed text-zinc-700">
                 <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400">DDP PARK SAJANG · PLAN</p>
-                날씨·장소 무드·핏·소재 전략과 대화 중 요청을 반영해 5가지 방향을 만들었어요. 순위는 재평가 총점 기준이며, 원하는 후보를 눌러 최종 룩북에 포함할 수 있습니다.
+                {evaluationProcess.planStatus === "partial" ? "보완을 마치지 못한 항목이 있어 먼저 확보한 대안을 보여드려요. 원하는 후보를 선택하면 바로 룩북을 만들 수 있어요." : "아이템 조합과 요청 반영 정도를 비교했어요. 원하는 후보를 선택하면 룩북을 만들 수 있어요."}
+                {(evaluationProcess.warnings ?? []).map((warning, index) => <p role="status" key={index} className="mt-2 text-xs">{warning}</p>)}
               </div>
               <div className="mt-4 shrink-0 border border-zinc-200 bg-white">
                 <button
@@ -1466,7 +1556,7 @@ export default function Home() {
                           <article key={`candidate-${item.id}`} className="border-l-2 border-zinc-300 pl-3">
                             <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400">{item.label}</p>
                           <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-600"><span className="font-semibold text-zinc-900">{item.userLabel}</span> · {item.userText}</p>
-                            <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-500"><span className="font-semibold text-zinc-700">반영</span> · {item.agentText}</p>
+                            <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-500"><span className="font-semibold text-zinc-700">추천 방향</span> · {item.agentText}</p>
                           </article>
                         ))}
                       </div>
@@ -1496,7 +1586,9 @@ export default function Home() {
                         <span className="border border-zinc-200 px-2 py-1">무드 · {candidate.mood}</span>
                         <span className="border border-zinc-200 px-2 py-1">핏 · {candidate.fitStrategy || "상황 무드 기반 핏"}</span>
                       </div>
-                      <p className="mt-3 break-keep text-xs text-zinc-500">핵심 아이템 · {(candidate.outfitItems ?? []).slice(0, 3).join(", ")}</p>
+                      <p className="mt-3 break-keep text-xs text-zinc-500">핵심 아이템 · {(candidate.outfitItems ?? []).join(", ")}</p>
+                      <p className="mt-2 break-keep text-xs text-zinc-600">{evaluation?.decisionReason}</p>
+                      {evaluationProcess.planStatus === "partial" && Boolean(evaluation?.failureReasons.length) && <p className="mt-2 break-keep text-xs text-zinc-500">보완할 점 · {evaluation?.failureReasons.slice(0, 2).join(" / ")}</p>}
                       <p className="mt-3 text-xs font-medium text-zinc-700">{selected ? "✓ 룩북 생성 대상으로 선택됨" : "눌러서 룩북 대상에 포함"}</p>
                     </button>
                   );
@@ -1504,7 +1596,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="mt-5 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-4">
-                <p className="text-sm text-zinc-500">1차 평가 → 실패 원인 수정 → 재평가 결과를 Agent Trace에서 확인할 수 있어요.</p>
+                <p className="text-sm text-zinc-500">{evaluationProcess.planStatus === "partial" ? "점수는 확보한 명세의 비교값입니다. 완료하지 못한 검증은 통과로 처리하지 않았어요." : "평가와 보완 과정을 실행 기록에서 확인할 수 있어요."}</p>
                 <button type="button" onClick={() => void generateSelectedLooks()} disabled={isBusy || selectedCandidateIds.length === 0} className="rounded-none bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-40">선택한 {selectedCandidateIds.length}개 룩북 보기</button>
               </div>
             </section>
@@ -1517,6 +1609,7 @@ export default function Home() {
                 <button type="button" onClick={resetForNewSearch} className="rounded-none bg-black px-3 py-2 text-xs font-medium text-white transition hover:bg-zinc-800">재검색</button>
               </div>
               <div className="min-h-0 overflow-y-auto pr-2">
+                {evaluationProcess?.planStatus === "partial" && <p role="status" className="mb-3 border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">대안 후보로 만든 룩북이에요. {(evaluationProcess.warnings ?? []).join(" ")}</p>}
                 <div className="grid min-w-0 gap-5 md:grid-cols-2">{variants.map(renderLookbookCard)}</div>
               </div>
               <aside className="min-h-0 min-w-0 overflow-y-auto border border-zinc-200 bg-white p-4">
@@ -1542,7 +1635,7 @@ export default function Home() {
                             <article key={`final-${item.id}`} className="border-l-2 border-zinc-300 pl-3">
                               <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400">{item.label}</p>
                               <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-600"><span className="font-semibold text-zinc-900">{item.userLabel}</span> · {item.userText}</p>
-                              <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-500"><span className="font-semibold text-zinc-700">반영</span> · {item.agentText}</p>
+                              <p className="mt-1 break-keep text-xs leading-relaxed text-zinc-500"><span className="font-semibold text-zinc-700">추천 방향</span> · {item.agentText}</p>
                             </article>
                           ))}
                         </div>

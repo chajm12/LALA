@@ -1,4 +1,4 @@
-const SEOUL_DEFAULT = "Seoul, South Korea";
+import { weatherParentRegion } from "./location";
 const WEATHER_TIMEOUT_MS = 8_000;
 
 type WeatherLookupArgs = {
@@ -37,14 +37,11 @@ function dateDistanceFromToday(date: string) {
 }
 
 function locationCandidates(raw: string) {
-  const normalized = raw.trim() || SEOUL_DEFAULT;
+  const normalized = raw.trim();
   const simplified = normalized
     .replace(/(카페|식당|결혼식장|회의실|공원|해변|역)\s*$/g, "")
     .trim();
-  const koreanSeoulContext = /[가-힣]/.test(simplified) && !/대한민국|한국|서울/.test(simplified)
-    ? [`${simplified}, Seoul, South Korea`, `${simplified}, South Korea`]
-    : [];
-  return [...new Set([normalized, ...koreanSeoulContext, simplified].filter(Boolean))];
+  return [...new Set([normalized, simplified].filter(Boolean))];
 }
 
 async function geocode(location: string) {
@@ -65,17 +62,24 @@ async function geocode(location: string) {
       continue;
     }
     if (!response.ok) continue;
-    const data = (await response.json()) as {
+    const data = (await response.json().catch(() => null)) as {
       results?: Array<{
         name?: string;
         country?: string;
+        country_code?: string;
         admin1?: string;
         latitude?: number;
         longitude?: number;
         timezone?: string;
       }>;
     };
-    const result = data.results?.find((item) => item.country === "대한민국") ?? data.results?.[0];
+    const results = data?.results ?? [];
+    const parent = weatherParentRegion(location);
+    const parentPattern = parent === "Seoul" ? /서울|Seoul/i : parent === "Busan" ? /부산|Busan/i : parent === "Jeju" ? /제주|Jeju/i : null;
+    const koreanResults = results.filter((item) => item.country === "대한민국" || item.country_code === "KR");
+    const exactNames = results.filter((item) => item.name?.replace(/\s+/g, "").toLowerCase() === candidate.replace(/\s+/g, "").toLowerCase());
+    const eligible = /[가-힣]/.test(location) ? [...koreanResults, ...exactNames] : [...koreanResults, ...results];
+    const result = eligible.find((item) => !parentPattern || parentPattern.test(item.admin1 ?? "") || parentPattern.test(item.name ?? ""));
     if (result?.latitude !== undefined && result.longitude !== undefined) {
       return {
         query: candidate,
@@ -94,15 +98,28 @@ async function geocode(location: string) {
 
 export async function lookupOpenMeteoWeather(args: WeatherLookupArgs) {
   const date = normalizeDate(args.date);
-  const requestedLocation = args.location?.trim() || SEOUL_DEFAULT;
-  const directLocation = await geocode(requestedLocation);
-  const useKoreanParentRegion = Boolean(args.location && /[가-힣]/.test(args.location));
-  const parentRegion = !directLocation && useKoreanParentRegion
-    ? await geocode(SEOUL_DEFAULT)
-    : null;
-  const location = directLocation ?? parentRegion;
+  const requestedLocation = args.location?.trim();
   const daysFromToday = dateDistanceFromToday(date);
   const season = seasonForDate(date);
+  if (!requestedLocation) {
+    return {
+      source: "Open-Meteo Geocoding",
+      date, season,
+      location: { query: "미지정", resolved: false },
+      forecastAvailable: false,
+      guidance: "장소가 없어 날씨를 조회하지 않았습니다. 지역을 알려주시면 예보를 반영할 수 있습니다.",
+    };
+  }
+  const directLocation = await geocode(requestedLocation);
+  const knownParent = weatherParentRegion(requestedLocation);
+  const parentRegion = !directLocation && knownParent ? await geocode(knownParent) : null;
+  const resolvedLocation = directLocation ?? parentRegion;
+  const location = resolvedLocation ? {
+    ...resolvedLocation,
+    query: requestedLocation,
+    resolved: true,
+    resolution: directLocation ? "direct" : "parent_region",
+  } : null;
 
   if (!location) {
     return {
@@ -123,9 +140,7 @@ export async function lookupOpenMeteoWeather(args: WeatherLookupArgs) {
       source: "Open-Meteo Geocoding",
       date,
       season,
-      location: directLocation
-        ? location
-        : { ...location, query: requestedLocation, resolution: "parent_region" },
+      location,
       forecastAvailable: false,
       guidance: `${date}는 단기 예보 범위를 벗어나므로 ${season} 계절감과 지역 기후만 반영합니다.`,
     };
@@ -169,7 +184,7 @@ export async function lookupOpenMeteoWeather(args: WeatherLookupArgs) {
     };
   }
 
-  const data = (await response.json()) as {
+  const data = (await response.json().catch(() => null)) as {
     daily?: {
       temperature_2m_max?: number[];
       temperature_2m_min?: number[];
@@ -178,7 +193,7 @@ export async function lookupOpenMeteoWeather(args: WeatherLookupArgs) {
       wind_speed_10m_max?: number[];
     };
   };
-  const daily = data.daily;
+  const daily = data?.daily;
   const forecast = {
     temperatureMax: daily?.temperature_2m_max?.[0] ?? null,
     temperatureMin: daily?.temperature_2m_min?.[0] ?? null,
@@ -187,17 +202,23 @@ export async function lookupOpenMeteoWeather(args: WeatherLookupArgs) {
     windSpeedMax: daily?.wind_speed_10m_max?.[0] ?? null,
   };
 
+  if (!Number.isFinite(forecast.temperatureMax) || !Number.isFinite(forecast.temperatureMin)) {
+    return {
+      source: "Open-Meteo Forecast + Geocoding", date, season, location,
+      forecastAvailable: false,
+      guidance: "예보 응답에 기온이 없어 날씨를 확정하지 않았습니다. 계절감만 반영합니다.",
+    };
+  }
+
   return {
     source: "Open-Meteo Forecast + Geocoding",
     date,
     season,
-    location: directLocation
-      ? location
-      : { ...location, query: requestedLocation, resolution: "parent_region" },
+    location,
     forecastAvailable: true,
     forecast,
     guidance: directLocation
       ? `${date}의 실제 단기 예보와 ${season} 계절감을 함께 반영합니다.`
-      : `${requestedLocation}의 세부 좌표를 찾지 못해 Open-Meteo의 서울 기준 날씨와 ${season} 계절감을 반영합니다.`,
+      : `${requestedLocation}의 세부 좌표를 찾지 못해 Open-Meteo의 ${location.name} 기준 날씨와 ${season} 계절감을 반영합니다.`,
   };
 }

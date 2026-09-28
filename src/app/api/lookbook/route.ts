@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { IMAGE_MODEL, openai, parseJsonObjectFromText } from "@/lib/openai";
-import { getNvidiaClient, NVIDIA_VISION_MODEL } from "@/lib/nvidia";
+import { sanitizeCoreText } from "@/lib/garments";
+import { ensureGarmentSpecs, compareGarmentSpecs, type GarmentSpec } from "@/lib/garment-specs";
+import { inspectLookbookGarments } from "@/lib/shopping-visual";
+import { IMAGE_MODEL, openai } from "@/lib/openai";
 import { agentLog } from "@/lib/log";
 import type { WeatherSnapshot } from "@/lib/verifiers";
 
@@ -62,21 +64,22 @@ function buildPrompt(
       `최고 ${forecast?.temperatureMax ?? "미상"}°C, 최저 ${forecast?.temperatureMin ?? "미상"}°C, ` +
       `강수량 ${forecast?.precipitationMm ?? "미상"}mm, 바람 ${forecast?.windSpeedMax ?? "미상"}m/s`
     : "날씨 데이터 없음; 계절감만 사용";
-  const verifierIssues = evaluation?.verifierIssues?.join(" / ") || "없음";
+  const verifierIssues = evaluation?.verifierIssues?.map(sanitizeCoreText).filter(Boolean).join(" / ") || "없음";
   const trendSummary = trend.length > 2800 ? `${trend.slice(0, 2800)}...` : trend;
 
   return `Create a wearable Korean online fashion e-commerce lookbook image for the concept "${concept.name}".
-This is a locked outfit specification. Show exactly the listed garments and do not invent extra garments, accessories, logos, text, patterns, or props.
+This is a locked outfit specification. Show only tops, bottoms, shoes, and the specified outerwear. No bags, belts, hats, jewelry, watches, scarves, eyewear, ties, or visible socks, even if old context asks for them. Do not invent extra garments, accessories, logos, text, patterns, or props.
 Target model: ${target || "성인 남성"}. Body profile: ${bodyProfile || "사용자 체형 정보 없음"}.
 The model must have realistic body volume and proportions implied by the user's height and weight. Do not turn the model into a generic tall, thin, muscular, or runway model.
 Exact garments to show: ${items || concept.description}.
+Authoritative per-garment attributes: ${JSON.stringify(concept.garmentSpecs)}. These color/pattern/sleeve/material/closure choices override the global palette and prose. Solid means no camouflage, checks, stripes, chest graphic or added print; keep brand shoe markings only. Do not replace a long-sleeve knit with a knit vest, woven button shirt with short-sleeve zip polo, chinos or denim with track pants.
 Fit and silhouette: ${fitStrategy}. Mood: ${concept.mood}. Color palette: ${colors}. Materials and visible texture: ${materials}.
 Situation and styling context: User request, weather, place, and locked outfit specification are primary. The fashion web research inside this context is reference-only style direction, never a template to copy: ${trendSummary}.
 Weather requirements: ${weatherSummary}.
 Objective verifier context: weather ${evaluation?.weatherScore ?? "미상"}, occasion ${evaluation?.placeScore ?? "미상"}, body fit ${evaluation?.bodyFitScore ?? "미상"}, color harmony ${evaluation?.colorScore ?? "미상"}. Remaining verifier issues to avoid: ${verifierIssues}.
-Latest explicit user edit request: ${refinementRequest || "없음"}. This request has priority over the previous outfit; reflect it exactly in the visible garment specification.
+Latest explicit user edit request: ${refinementRequest || "없음"}. Apply it only to the allowed tops, bottoms, shoes, or outerwear; preserve the other listed garments. The no-accessory policy always takes priority.
 Use contemporary Korean fashion editorial and premium e-commerce photography, clean neutral studio background, natural standing pose, realistic fabric drape, intentional styling proportions, visible material texture, and a clear full-body front-facing view. Preserve any specified check, stripe, washed finish, graphic, hardware, cropped proportion, curved silhouette, or layered detail instead of simplifying the outfit into plain basics.
-Keep comfortable empty space above the head and below the shoes. Show the entire head, hands, legs, socks if present, and shoes.
+Keep comfortable empty space above the head and below the shoes. Show the entire head, hands, legs, and shoes. No added accessories or props.
 Do not crop any body part. Do not use editorial runway exaggeration, fantasy clothing, extra layers, random accessories, distorted anatomy, floating garments, or unreadable branding.${extra ? ` ${extra}` : ""}`;
 }
 
@@ -107,61 +110,20 @@ async function generateImage(prompt: string): Promise<GenerateResult> {
       n: 1,
     }, { signal: AbortSignal.timeout(60_000) });
     const b64 = image.data?.[0]?.b64_json;
-    return { imageUrl: b64 ? `data:image/jpeg;base64,${b64}` : null, error: null };
+    return { imageUrl: b64 ? `data:image/jpeg;base64,${b64}` : null, error: b64 ? null : "이미지 생성 응답에 이미지가 없습니다." };
   } catch (e) {
     const message = e instanceof Error ? e.message : "이미지 생성 중 알 수 없는 오류";
     return { imageUrl: null, error: message };
   }
 }
 
-async function critiqueImage(
-  imageDataUrl: string,
-  concept: Record<string, unknown>,
-  evaluation: EvaluationContext | null,
-  trend: string,
-) {
-  const items = Array.isArray(concept.outfitItems) ? concept.outfitItems.join(", ") : "";
-  const colors = Array.isArray(concept.colorPalette) ? concept.colorPalette.join(", ") : "";
-  const completion = await getNvidiaClient().chat.completions.create({
-    model: NVIDIA_VISION_MODEL,
-    temperature: 0.1,
-    max_tokens: 900,
-    chat_template_kwargs: { enable_thinking: false },
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `너는 룩북 Objective Vision Verifier야. 이미지를 아래의 잠금 스펙과 비교해.
-착용 아이템: ${items}
-색상 팔레트: ${colors}
-무드: ${concept.mood}
-핏/실루엣: ${concept.fitStrategy}
-모델 타겟: ${concept.targetCustomer}
-상황 컨텍스트: ${trend.slice(0, 1800)}
-평가 점수 참고: ${JSON.stringify(evaluation)}
-
-다음 항목을 각각 확인해: full_body, garment_match, color_match, silhouette_match, body_profile_match, occasion_fit.
-materials는 사진만으로 원단 성분을 확정하지 말고, 색상·광택·질감이 명백히 모순될 때만 불일치로 판단해.
-착용 아이템이 이미지에 없거나 전혀 다른 종류이면 garment_match를 false로 해.
-전신이 잘렸거나 신발이 보이지 않으면 full_body를 false로 해.
-상황 적합성은 이미지에서 확인 가능한 복장 격식과 레이어링만 판단하고, 장소가 사진에 보이지 않는다는 이유로 실패시키지 마.
-모든 항목이 true에 가깝고 명백한 불일치가 없을 때만 matches를 true로 해.
-반드시 JSON만 반환해: {"matches": boolean, "checks": {"full_body": boolean, "garment_match": boolean, "color_match": boolean, "silhouette_match": boolean, "body_profile_match": boolean, "occasion_fit": boolean}, "mismatches": string[]}. mismatches는 구체적인 한국어 문장으로 작성해.`,
-          },
-          { type: "image_url", image_url: { url: imageDataUrl } },
-        ],
-      },
-    ],
-  } as never, { signal: AbortSignal.timeout(15_000) });
-  const content = completion.choices[0]?.message?.content;
-  return parseJsonObjectFromText(content);
-}
-
 export async function POST(req: Request) {
   try {
-    const { concept, evaluation, trend = "", weather } = await req.json();
+    const { concept: rawConcept, evaluation, trend: rawTrend = "", weather } = await req.json();
+    if (!rawConcept || typeof rawConcept !== "object") return NextResponse.json({ error: "룩 정보를 보내주세요." }, { status: 400 });
+    const concept = ensureGarmentSpecs(rawConcept as Record<string, unknown>);
+    const trend = sanitizeCoreText(rawTrend);
+    if (!(concept.outfitItems as string[]).length) return NextResponse.json({ error: "상의·하의·신발·아우터 중 추천할 의류가 없어요." }, { status: 400 });
     const evaluationContext = evaluation && typeof evaluation === "object"
       ? (evaluation as EvaluationContext)
       : null;
@@ -179,29 +141,25 @@ export async function POST(req: Request) {
     const generationError = gen.error;
     let verified = false;
     let mismatches: string[] = [];
+    let imageGarmentSpecs: GarmentSpec[] = [];
     if (imageUrl) {
-      agentLog(
-        "lookbook",
-        `Vision으로 이미지-스펙 정합성 검증 중 (재생성 없음)...`,
-        `NVIDIA NIM vision · ${NVIDIA_VISION_MODEL}`,
-      );
+      agentLog("lookbook", "이미지의 품목별 색상·무늬·소매를 확인합니다.", "OpenAI image attribute verification");
       try {
-        const critique = await critiqueImage(imageUrl, concept, evaluationContext, trend);
-        verified = Boolean(critique.matches);
-        mismatches = Array.isArray(critique.mismatches) ? critique.mismatches : [];
-      } catch {
-        agentLog("lookbook", `✗ Vision 검증 실패 (best-effort, 미검증 상태로 진행)`);
-      }
-
-      if (verified) {
-        agentLog("lookbook", `✓ 스펙 일치 확인됨`);
-      } else if (mismatches.length) {
-        agentLog("lookbook", `⚠ 불일치 기록(자동 재생성 생략): ${mismatches.join(", ")}`);
-      }
+        const observation = await inspectLookbookGarments(imageUrl, concept.garmentSpecs, req.signal);
+        imageGarmentSpecs = observation.specs;
+        if (observation.status === "verified") {
+          const comparison = compareGarmentSpecs(concept.garmentSpecs, imageGarmentSpecs);
+          verified = comparison.matches;
+          mismatches = comparison.differences;
+        }
+        agentLog("lookbook", verified ? "품목별 이미지 명세 비교 완료" : "이미지는 유지하고 확인 미완료·차이 항목을 표시합니다.");
+      } catch { agentLog("lookbook", "이미지 속성 확인을 완료하지 못했습니다. 생성 이미지는 유지합니다."); }
     }
 
     return NextResponse.json({
       imageUrl,
+      concept,
+      imageGarmentSpecs,
       verified,
       mismatches,
       retried: false,

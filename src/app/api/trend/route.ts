@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { agentLog } from "@/lib/log";
+import { extractLocationHint } from "@/lib/location";
 import { getNvidiaClient, NVIDIA_FAST_MODEL } from "@/lib/nvidia";
 import { OPENAI_SERVICE_TIER, OPENAI_TREND_MODEL, openai } from "@/lib/openai";
 import { getTodayInKorea, lookupOpenMeteoWeather } from "@/lib/weather";
@@ -79,38 +80,6 @@ function seasonHint(date: string | undefined) {
   return "겨울";
 }
 
-function extractLocationHint(keyword: string) {
-  const withoutBody = keyword
-    .replace(/\d{3}(?:\.\d+)?\s*(?:cm|센티|키)/gi, " ")
-    .replace(/\d{2,3}(?:\.\d+)?\s*(?:kg|킬로|몸무게)/gi, " ")
-    .replace(/20\d{2}[./년-]\s*\d{1,2}[./월-]\s*\d{1,2}일?/g, " ")
-    .replace(/\d{1,2}월\s*\d{1,2}일?/g, " ")
-    .replace(/\d{1,2}[./]\d{1,2}/g, " ")
-    .replace(/(?:에서|으로|로)\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const venue = withoutBody.match(
-    /([가-힣A-Za-z0-9]+)\s*(?:방탈출\s*카페|카페|식당|결혼식장|웨딩홀|공원|호텔|여행|데이트|회의|장례식|lp\s*바)/i,
-  );
-  if (venue?.[1]) return venue[1];
-
-  const regional = withoutBody.match(/[가-힣A-Za-z0-9]+(?:특별시|광역시|자치시|도|시|군|구|동|읍|면|역)/);
-  if (regional?.[0]) return regional[0];
-
-  const ignored = new Set([
-    "다음주", "다음", "이번주", "이번", "주말", "오늘", "내일", "모레", "남자", "여자", "남성", "여성",
-    "데이트", "여행", "회의", "결혼식", "장례식", "카페", "식당", "호텔", "공원", "실내", "실외",
-    "일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일",
-  ]);
-  const freeToken = withoutBody
-    .split(/[\s,·/]+/)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 2 && !ignored.has(token))
-    .pop();
-  return freeToken;
-}
-
 const PLACE_SIGNATURES: Array<{ pattern: RegExp; context: string }> = [
   { pattern: /을지로/, context: "서울 중구의 인쇄·제조 골목과 오래된 간판, 바와 LP 문화가 공존하는 레트로 도심 상권" },
   { pattern: /성수/, context: "공장 지대의 거친 질감과 브랜드 쇼룸·카페·편집숍이 섞인 현대적인 캐주얼 상권" },
@@ -124,12 +93,13 @@ const PLACE_SIGNATURES: Array<{ pattern: RegExp; context: string }> = [
 ];
 
 function buildPlaceContext(location: string | undefined, keyword: string) {
-  const label = location?.trim() || "대한민국 서울";
+  const label = location?.trim();
+  if (!label) return "입력 장소: 미지정\n지역을 추정하지 않습니다. 사용자가 말한 약속 종류와 활동성만 스타일에 반영합니다.";
   const signature = PLACE_SIGNATURES.find((item) => item.pattern.test(label))?.context;
   if (signature) {
     return "입력 장소: " + label + "\n지역 분위기: " + signature + "\n스타일 적용: 장소명을 서울 전체로 뭉뚱그리지 말고, 이 생활권의 조도·보행량·상권 성격·문화적 인상을 착장의 무드, 소재, 디테일, 격식에 연결합니다.";
   }
-  return "입력 장소: " + label + "\n지역 분위기: \"" + label + "\"이라는 사용자의 실제 목적지와 약속 종류(" + keyword + ")를 중심으로 생활권·상권·시간대의 분위기를 해석합니다. 좌표 조회가 서울 기준으로 보완되더라도 장소 무드를 서울 전체로 치환하지 않습니다.";
+  return "입력 장소: " + label + "\n지역 분위기: \"" + label + "\"이라는 사용자의 실제 목적지와 약속 종류(" + keyword + ")를 중심으로 생활권·상권·시간대의 분위기를 해석합니다. 좌표가 확인되지 않으면 날씨를 추정하지 않습니다.";
 }
 
 async function researchFashionContext(keyword: string, season: string, placeContext: string) {
@@ -202,9 +172,9 @@ function formatWeatherContext(value: unknown) {
     ? (weather.forecast as Record<string, unknown>)
     : {};
   const locationLabel = location.resolution === "parent_region"
-    ? `${String(location.query ?? "요청 지역")} · ${String(location.name ?? "서울")} 기준`
-    : String(location.name ?? location.query ?? "대한민국 서울");
-  const weatherCode = Number(forecast.weatherCode);
+    ? `${String(location.query ?? "요청 지역")} · ${String(location.name ?? "상위 지역")} 기준`
+    : String(location.name ?? location.query ?? "미지정");
+  const weatherCode = forecast.weatherCode == null ? NaN : Number(forecast.weatherCode);
   const weatherLabel = Number.isFinite(weatherCode)
     ? weatherCode === 0 ? "맑음"
       : weatherCode <= 3 ? "구름 많음"
@@ -246,7 +216,7 @@ export async function POST(req: Request) {
     const weatherPromise = (async () => {
       agentLog(
         "weather",
-        "Open-Meteo 조회: " + (weatherArgs.location || "대한민국 서울") + " · " + (weatherArgs.date || "오늘"),
+        "Open-Meteo 조회: " + (weatherArgs.location || "장소 미지정 · 좌표 조회 생략") + " · " + (weatherArgs.date || "오늘"),
         "Open-Meteo Geocoding + Forecast",
       );
       return lookupOpenMeteoWeather(weatherArgs);
