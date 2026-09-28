@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ddp-nemo-agent"
+version = "0.1.0"
+description = "NeMo Agent Toolkit workflow for DDP PARK SAJANG"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "nvidia-nat[langchain]==1.8.*",
+  "httpx>=0.27,<1",
+]
+
+[project.entry-points."nat.plugins"]
+ddp_nemo_agent = "ddp_nemo_agent.register"
+
+[tool.setuptools.packages.find]
+where = ["src"]

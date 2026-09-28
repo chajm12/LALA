@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { openai, parseJsonContent, TEXT_MODEL } from "@/lib/openai";
+import { parseJsonContent } from "@/lib/openai";
+import { getNvidiaClient, NVIDIA_TEXT_MODEL } from "@/lib/nvidia";
 import { agentLog } from "@/lib/log";
 
 type Concept = {
@@ -85,9 +86,11 @@ function normalizeEvaluations(raw: unknown, candidates: Concept[]): Evaluation[]
 }
 
 async function evaluateRound(keyword: string, trend: string, candidates: Concept[], round: 1 | 2) {
-  const completion = await openai.chat.completions.create({
-    model: TEXT_MODEL,
-    response_format: { type: "json_object" },
+  const completion = await getNvidiaClient().chat.completions.create({
+    model: NVIDIA_TEXT_MODEL,
+    temperature: 0.2,
+    max_tokens: 7000,
+    chat_template_kwargs: { enable_thinking: false },
     messages: [
       {
         role: "system",
@@ -98,9 +101,9 @@ async function evaluateRound(keyword: string, trend: string, candidates: Concept
         role: "user",
         content: `평가 라운드: ${round}\n사용자 요청: ${keyword}\n트렌드/날씨/장소 분석:\n${trend}\n\n후보:\n${JSON.stringify(candidates, null, 2)}`,
       },
-    ],
-  });
-  const parsed = parseJsonContent(completion.choices[0].message.content);
+      ],
+    } as never);
+  const parsed = parseJsonContent(completion.choices[0]?.message?.content);
   return normalizeEvaluations(parsed.evaluations, candidates);
 }
 
@@ -110,9 +113,11 @@ async function repairCandidates(
   candidates: Concept[],
   evaluations: Evaluation[],
 ) {
-  const completion = await openai.chat.completions.create({
-    model: TEXT_MODEL,
-    response_format: { type: "json_object" },
+  const completion = await getNvidiaClient().chat.completions.create({
+    model: NVIDIA_TEXT_MODEL,
+    temperature: 0.2,
+    max_tokens: 7000,
+    chat_template_kwargs: { enable_thinking: false },
     messages: [
       {
         role: "system",
@@ -123,9 +128,9 @@ async function repairCandidates(
         role: "user",
         content: `사용자 요청: ${keyword}\n트렌드/날씨/장소 분석:\n${trend}\n\n원 후보:\n${JSON.stringify(candidates, null, 2)}\n\n1차 평가:\n${JSON.stringify(evaluations, null, 2)}`,
       },
-    ],
-  });
-  const parsed = parseJsonContent(completion.choices[0].message.content);
+      ],
+    } as never);
+  const parsed = parseJsonContent(completion.choices[0]?.message?.content);
   return {
     repairSummary: Array.isArray(parsed.repairSummary) ? (parsed.repairSummary as string[]) : [],
     concepts: Array.isArray(parsed.concepts) ? (parsed.concepts as Concept[]) : candidates,
@@ -147,9 +152,11 @@ async function explainFinalSelection(
 ) {
   const finalIds = new Set(selectFinal(concepts, evaluations).map((item) => item.id));
   const ranked = [...evaluations].sort((a, b) => b.totalScore - a.totalScore);
-  const completion = await openai.chat.completions.create({
-    model: TEXT_MODEL,
-    response_format: { type: "json_object" },
+  const completion = await getNvidiaClient().chat.completions.create({
+    model: NVIDIA_TEXT_MODEL,
+    temperature: 0.2,
+    max_tokens: 5000,
+    chat_template_kwargs: { enable_thinking: false },
     messages: [
       {
         role: "system",
@@ -160,9 +167,9 @@ async function explainFinalSelection(
         role: "user",
         content: `사용자 요청: ${keyword}\n트렌드/날씨/장소 분석:\n${trend}\n최종 선택 id: ${JSON.stringify([...finalIds])}\n재평가 순위:\n${JSON.stringify(ranked, null, 2)}\n수정 후보:\n${JSON.stringify(concepts, null, 2)}`,
       },
-    ],
-  });
-  const parsed = parseJsonContent(completion.choices[0].message.content);
+      ],
+    } as never);
+  const parsed = parseJsonContent(completion.choices[0]?.message?.content);
   return Array.isArray(parsed.decisions) ? (parsed.decisions as Evaluation[]) : [];
 }
 
@@ -174,13 +181,13 @@ export async function POST(req: Request) {
       throw new Error("평가할 후보가 부족합니다.");
     }
 
-    agentLog("evaluate", `후보 ${concepts.length}개 1차 평가 시작`, `chat.completions · ${TEXT_MODEL}`);
+    agentLog("evaluate", `후보 ${concepts.length}개 1차 평가 시작`, `NVIDIA NIM · ${NVIDIA_TEXT_MODEL}`);
     const round1 = await evaluateRound(keyword, trend, concepts, 1);
 
-    agentLog("evaluate", `실패 원인 기반 후보 수정 시작`, `chat.completions · ${TEXT_MODEL}`);
+    agentLog("evaluate", `실패 원인 기반 후보 수정 시작`, `NVIDIA NIM · ${NVIDIA_TEXT_MODEL}`);
     const repaired = await repairCandidates(keyword, trend, concepts, round1);
 
-    agentLog("evaluate", `수정 후보 ${repaired.concepts.length}개 재평가 시작`, `chat.completions · ${TEXT_MODEL}`);
+    agentLog("evaluate", `수정 후보 ${repaired.concepts.length}개 재평가 시작`, `NVIDIA NIM · ${NVIDIA_TEXT_MODEL}`);
     const round2 = await evaluateRound(keyword, trend, repaired.concepts, 2);
 
     const finalConcepts = selectFinal(repaired.concepts, round2);

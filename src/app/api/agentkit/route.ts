@@ -5,6 +5,12 @@ export async function GET() {
   return NextResponse.json({
     name: "DDP PARK SAJANG AgentKit",
     description: "기존 API 라우트를 AgentKit tool orchestration 형태로 묶은 퍼스널 스타일링 에이전트",
+    runtime: {
+      default: "next-agent-orchestrator",
+      nat: "nvidia-nat tool_calling_agent",
+      natWorkflowUrl: process.env.NAT_WORKFLOW_URL ?? null,
+    },
+    actions: ["prepare", "consult", "plan", "lookbook", "refine", "shopping", "full"],
     tools: Object.values(AGENTKIT_TOOLS),
     traceSteps: AGENTKIT_TRACE_STEPS,
   });

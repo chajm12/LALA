@@ -1,0 +1,53 @@
+llms:
+  nim_llm:
+    _type: nim
+    base_url: ${NVIDIA_BASE_URL:-"https://integrate.api.nvidia.com/v1"}
+    api_key: ${NVIDIA_API_KEY}
+    model_name: ${NVIDIA_AGENT_MODEL:-"nvidia/nemotron-3.5-lightning-30b-a3b"}
+    temperature: 0.2
+
+functions:
+  user_intent_extractor:
+    _type: ddp_api_tool
+    route: /api/intent
+    description: >-
+      사용자 원문에서 반드시 지킬 요구, 피할 요소, 무드·핏·소재 방향과 추가 질문이 필요한 정보를 구조화한다.
+      입력은 사용자 원문 문자열 또는 {"keyword":"..."} JSON이다.
+  analyze_context:
+    _type: ddp_api_tool
+    route: /api/trend
+    description: >-
+      날짜, 장소, 약속, 날씨, 계절감과 패션 레퍼런스를 분석한다.
+      입력은 사용자 원문 문자열 또는 {"keyword":"..."} JSON이다.
+  style_consultation:
+    _type: ddp_api_tool
+    route: /api/consult
+    description: >-
+      단계별 사용자 피드백을 반영해 장소 무드, 핏, 소재 방향을 자연어로 상담한다.
+      입력 JSON은 stage, keyword, trend, weather, placeContext, feedback 필드를 포함한다.
+  outfit_planner:
+    _type: ddp_api_tool
+    route: /api/plan
+    description: >-
+      사용자 요구와 컨텍스트를 우선해 5개 후보를 생성하고 평가, 수정, 재평가한다.
+      입력 JSON은 keyword, trend, weather, intent 필드를 포함한다.
+  lookbook_generator:
+    _type: ddp_api_tool
+    route: /api/lookbook
+    description: >-
+      선택된 룩 concept를 이미지 룩북으로 생성하고 착장 스펙을 검증한다.
+      입력 JSON은 concept, evaluation, trend, weather 필드를 포함한다.
+
+workflow:
+  _type: tool_calling_agent
+  tool_names:
+    - user_intent_extractor
+    - analyze_context
+    - style_consultation
+    - outfit_planner
+    - lookbook_generator
+  llm_name: nim_llm
+  verbose: true
+  handle_tool_errors: true
+  max_iterations: 8
+  system_prompt: file://../prompts/system_prompt.txt

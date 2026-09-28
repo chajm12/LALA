@@ -30,13 +30,30 @@ function listSimilarity(a: string[], b: string[]): number {
   return jaccard(tokenize(a.join(" ")), tokenize(b.join(" ")));
 }
 
+const ITEM_CATEGORY_RULES: Array<[string, RegExp]> = [
+  ["head", /모자|캡|비니|버킷/],
+  ["outer", /아우터|재킷|자켓|블루종|코트|점퍼|파카|트렌치|베스트|셔츠 재킷/],
+  ["layer", /레이어드|가디건|조끼|후드|맨투맨|스웨터|니트/],
+  ["top", /상의|이너|티셔츠|셔츠|톱|탑|블라우스/],
+  ["bottom", /하의|팬츠|바지|데님|스커트|치마|쇼츠/],
+  ["shoes", /신발|슈즈|스니커즈|운동화|로퍼|더비|부츠|샌들/],
+  ["accessory", /가방|백|벨트|안경|목걸이|귀걸이|시계|악세사리|액세서리/],
+];
+
+function inferItemCategory(value: string) {
+  return ITEM_CATEGORY_RULES.find(([, pattern]) => pattern.test(value))?.[0] ?? value.trim();
+}
+
 /** "상의(아우터): 네이비 블레이저" → Map{ "상의(아우터)" => "네이비 블레이저" } */
 function parseItems(items: string[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const raw of items) {
     const i = raw.indexOf(":");
-    if (i > 0) map.set(raw.slice(0, i).trim(), raw.slice(i + 1).trim());
-    else map.set(raw.trim(), raw.trim());
+    if (i > 0) {
+      map.set(inferItemCategory(raw.slice(0, i)), raw.slice(i + 1).trim());
+    } else {
+      map.set(inferItemCategory(raw), raw.trim());
+    }
   }
   return map;
 }

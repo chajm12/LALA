@@ -1,0 +1,51 @@
+llms:
+  nim_llm:
+    _type: nim
+    base_url: ${NVIDIA_BASE_URL:-"https://integrate.api.nvidia.com/v1"}
+    api_key: ${NVIDIA_API_KEY}
+    model_name: ${NVIDIA_AGENT_MODEL:-"nvidia/nemotron-3.5-lightning-30b-a3b"}
+    temperature: 0.2
+
+functions:
+  user_intent_extractor:
+    _type: ddp_api_tool
+    route: /api/intent
+    description: 사용자 원문에서 지켜야 할 요구와 부족한 정보를 구조화한다.
+  analyze_context:
+    _type: ddp_api_tool
+    route: /api/trend
+    description: 날짜·장소·날씨·계절감과 패션 컨텍스트를 분석한다.
+  style_consultation:
+    _type: ddp_api_tool
+    route: /api/consult
+    description: 사용자 피드백을 반영해 스타일 방향을 조정한다.
+  outfit_planner:
+    _type: ddp_api_tool
+    route: /api/plan
+    description: 5개 후보를 만들고 평가·수정·재평가한다.
+  lookbook_generator:
+    _type: ddp_api_tool
+    route: /api/lookbook
+    description: 선택한 룩을 이미지화하고 Vision으로 검증한다.
+
+workflow:
+  _type: tool_calling_agent
+  tool_names:
+    - user_intent_extractor
+    - analyze_context
+    - style_consultation
+    - outfit_planner
+    - lookbook_generator
+  llm_name: nim_llm
+  verbose: true
+  handle_tool_errors: true
+  max_iterations: 8
+  system_prompt: file://../prompts/system_prompt.txt
+
+eval:
+  general:
+    output_dir: ./.tmp/nat/ddp_park_sajang/eval
+    max_concurrency: 1
+    dataset:
+      _type: json
+      file_path: ./nemo_agent/eval/style_cases.json

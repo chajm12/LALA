@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { openai, parseJsonContent, TEXT_MODEL } from "@/lib/openai";
+import { parseJsonContent } from "@/lib/openai";
+import { getNvidiaClient, NVIDIA_TEXT_MODEL } from "@/lib/nvidia";
 import { agentLog } from "@/lib/log";
 
 export type Concept = {
@@ -20,11 +21,17 @@ export async function POST(req: Request) {
   try {
     const { keyword, trend } = await req.json();
 
-    agentLog("concept", `"${keyword}" 기반 착장 후보 5개 생성 시작`, `chat.completions · ${TEXT_MODEL}`);
+    agentLog(
+      "concept",
+      `"${keyword}" 기반 착장 후보 5개 생성 시작`,
+      `NVIDIA NIM chat.completions · ${NVIDIA_TEXT_MODEL}`,
+    );
 
-    const completion = await openai.chat.completions.create({
-      model: TEXT_MODEL,
-      response_format: { type: "json_object" },
+    const completion = await getNvidiaClient().chat.completions.create({
+      model: NVIDIA_TEXT_MODEL,
+      temperature: 0.35,
+      max_tokens: 7000,
+      chat_template_kwargs: { enable_thinking: false },
       messages: [
         {
           role: "system",
@@ -36,9 +43,9 @@ export async function POST(req: Request) {
           content: `사용자 요청: ${keyword}\n\n트렌드/날씨/장소 분석:\n${trend}`,
         },
       ],
-    });
+    } as never);
 
-    const parsed = parseJsonContent(completion.choices[0].message.content);
+    const parsed = parseJsonContent(completion.choices[0]?.message?.content);
     const concepts: Concept[] = Array.isArray(parsed.concepts) ? parsed.concepts.slice(0, 5) : [];
 
     if (concepts.length < 5) {

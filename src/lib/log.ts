@@ -1,5 +1,7 @@
 const COLORS = {
   trend: "\x1b[36m", // cyan
+  intent: "\x1b[37m", // white
+  weather: "\x1b[96m", // bright cyan
   concept: "\x1b[35m", // magenta
   lookbook: "\x1b[33m", // yellow
   evaluate: "\x1b[34m", // blue
@@ -12,9 +14,9 @@ type Scope = keyof typeof COLORS;
 
 /**
  * tool: what's actually being called for this log line, e.g.
- * "responses.create + web_search_preview · gpt-5.6-luna" or
+ * "NVIDIA NIM chat.completions · nemotron" or
  * "images.generate · gpt-image-2" - shown dimmed so the log doubles
- * as a trace of which OpenAI API/tool/model fired at each step.
+ * as a trace of which API/tool/model fired at each step.
  */
 export function agentLog(scope: Scope, message: string, tool?: string) {
   const time = new Date().toLocaleTimeString("ko-KR", { hour12: false });
