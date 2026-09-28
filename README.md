@@ -174,4 +174,4 @@ docs/                          데이터셋 평가, 정합성 수정 기록
 
 ## 9. 팀
 
-LALA — Korea Agentic AI Hackathon 2026 참가팀. (팀원 이름·역할은 제출 전에 채워주세요.)
+LALA — Korea Agentic AI Hackathon 2026 참가팀.
