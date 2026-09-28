@@ -94,14 +94,63 @@ type Screen = "search" | "chat" | "candidates" | "final";
 
 type ConversationStage = "place" | "fit" | "material" | "ready";
 
+/** 상담 선택지: 짧은 제목 + 그 선택이 코디에 어떤 의미인지 한 줄 */
+type ChatOption = { label: string; detail: string; primary?: boolean };
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
   stage?: "weather" | "place" | "fit" | "material" | "ready";
-  options?: string[];
+  options?: ChatOption[];
   allowQuickApply?: boolean;
 };
+
+function toChatOptions(value: unknown): ChatOption[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): ChatOption | null => {
+      if (typeof item === "string" && item.trim()) return { label: item.trim(), detail: "" };
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        const label = typeof record.label === "string" ? record.label.trim() : "";
+        if (!label) return null;
+        return { label, detail: typeof record.detail === "string" ? record.detail.trim() : "", primary: record.primary === true };
+      }
+      return null;
+    })
+    .filter((item): item is ChatOption => item !== null)
+    .slice(0, 4);
+}
+
+/** 에이전트가 추천만 하고 질문이 없을 때: '그대로 진행' + 단계별 대안 2개를 성의 있게 제시 */
+function quickApplyOptions(stage: ChatMessage["stage"], keyword: string): ChatOption[] {
+  const formal = /결혼|장례|회의|면접|오피스|비즈니스|하객/.test(keyword);
+  const accept: ChatOption = { label: "이대로 진행", detail: "방금 추천한 방향을 그대로 후보 5개에 반영해요.", primary: true };
+  if (stage === "place") {
+    return [accept,
+      formal
+        ? { label: "조금 더 편안하게", detail: "격식은 지키되 재킷·구두 대신 니트·로퍼처럼 힘을 뺀 조합으로요." }
+        : { label: "조금 더 차분하게", detail: "톤을 낮추고 아이템 수를 줄여 정돈된 인상으로 맞춰요." },
+      formal
+        ? { label: "격식을 확실히", detail: "테일러드 아우터와 구두로 드레스코드를 분명하게 잡아요." }
+        : { label: "조금 더 개성 있게", detail: "패턴이나 포인트 컬러를 하나 넣어 눈에 띄는 요소를 만들어요." },
+    ];
+  }
+  if (stage === "fit") {
+    return [accept,
+      { label: "상체를 더 여유 있게", detail: "아우터·상의는 세미오버로, 하의는 곧게 떨어지는 핏으로 비율을 잡아요." },
+      { label: "전체를 더 정돈되게", detail: "레귤러~슬림 핏으로 실루엣을 깔끔하게 정리해요." },
+    ];
+  }
+  if (stage === "material") {
+    return [accept,
+      { label: "질감·패턴 더하기", detail: "니트 조직감이나 체크·스트라이프 한 가지로 밋밋함을 덜어요." },
+      { label: "더 담백하게", detail: "무지·단색 위주로 소재 대비만 살려 미니멀하게 가요." },
+    ];
+  }
+  return [accept];
+}
 
 type PlanningLog = {
   id: string;
@@ -396,7 +445,11 @@ function buildInitialPlaceQuestion(keyword: string, intent?: UserIntent | null) 
   if (!hasOccasion) {
     return {
       text: "장소는 파악했어요. 이번 일정은 어떤 약속인가요? 약속의 성격에 따라 격식과 무드를 먼저 맞출게요.",
-      options: ["데이트·친구 약속", "업무·회의", "여행·활동"],
+      options: [
+        { label: "데이트·친구 약속", detail: "편안하지만 신경 쓴 느낌. 캐주얼과 세미캐주얼 사이에서 잡아요." },
+        { label: "업무·회의", detail: "격식이 우선. 재킷·셔츠 기반의 정돈된 조합으로 맞춰요." },
+        { label: "여행·활동", detail: "이동과 활동성이 우선. 가벼운 레이어와 편한 신발 위주로요." },
+      ],
       stage: "place" as const,
       allowQuickApply: false,
     };
@@ -404,7 +457,11 @@ function buildInitialPlaceQuestion(keyword: string, intent?: UserIntent | null) 
   if (!hasMovement) {
     return {
       text: "실내외 이동 여부가 아직 정해지지 않았어요. 장소와 약속에 맞춰 제가 추천하거나, 직접 방향을 정해주시면 그 조건을 우선 반영할게요.",
-      options: ["추천해줘", "실내 중심", "이동이 많아요"],
+      options: [
+        { label: "추천해줘", detail: "장소와 약속 성격을 보고 제가 가장 자연스러운 방향을 먼저 제안할게요.", primary: true },
+        { label: "실내 중심", detail: "앉아 있는 시간이 길어요. 얇은 레이어와 앉았을 때 편한 핏을 우선해요." },
+        { label: "이동이 많아요", detail: "걷거나 대중교통을 타요. 편한 신발과 벗어 들기 쉬운 겉옷을 우선해요." },
+      ],
       stage: "place" as const,
       allowQuickApply: false,
     };
@@ -412,7 +469,11 @@ function buildInitialPlaceQuestion(keyword: string, intent?: UserIntent | null) 
   if (!hasFitDirection) {
     return {
       text: "핏은 아직 정해지지 않았어요. 체형과 장소 분위기를 보고 제가 추천하거나, 원하는 실루엣을 직접 알려주시면 그 방향을 우선 반영할게요.",
-      options: ["추천해줘", "정돈된 핏", "여유 있는 핏"],
+      options: [
+        { label: "추천해줘", detail: "체형과 장소 분위기에 맞는 핏을 제가 먼저 제안할게요.", primary: true },
+        { label: "정돈된 핏", detail: "레귤러~슬림으로 실루엣을 깔끔하게. 단정한 인상을 원할 때." },
+        { label: "여유 있는 핏", detail: "상의는 세미오버, 하의는 곧게. 편안하면서 요즘 비율로 잡아요." },
+      ],
       stage: "fit" as const,
       allowQuickApply: false,
     };
@@ -420,7 +481,11 @@ function buildInitialPlaceQuestion(keyword: string, intent?: UserIntent | null) 
   if (!hasMaterialDirection) {
     return {
       text: "소재와 레이어링은 아직 정해지지 않았어요. 날씨와 장소 무드에 맞는 조합을 제가 추천하거나, 원하는 소재·패턴을 직접 알려주시면 그 조건을 우선 반영할게요.",
-      options: ["추천해줘", "패턴·질감 더하기", "더 담백하게"],
+      options: [
+        { label: "추천해줘", detail: "날씨와 장소 무드에 맞는 소재·레이어링을 제가 먼저 제안할게요.", primary: true },
+        { label: "패턴·질감 더하기", detail: "니트 조직감이나 체크·스트라이프 한 가지로 포인트를 줘요." },
+        { label: "더 담백하게", detail: "무지·단색 위주로 소재 대비만 살려 미니멀하게 가요." },
+      ],
       stage: "material" as const,
       allowQuickApply: false,
     };
@@ -634,7 +699,7 @@ export default function Home() {
   function appendAssistant(
     text: string,
     stage?: ChatMessage["stage"],
-    options?: string[],
+    options?: ChatOption[],
     allowQuickApply = false,
   ) {
     const visibleText = text.trim();
@@ -667,7 +732,7 @@ export default function Home() {
   async function requestConsultation(
     stage: "place" | "fit" | "material",
     nextFeedback: string[],
-  ): Promise<{ message: string; options: string[]; allowQuickApply: boolean } | null> {
+  ): Promise<{ message: string; options: ChatOption[]; allowQuickApply: boolean } | null> {
     try {
       const data = await postJson(AGENTKIT_TOOLS.agent.endpoint, {
         action: "consult",
@@ -684,7 +749,7 @@ export default function Home() {
       appendAgentTrace(data.trace);
       return {
         message,
-        options: Array.isArray(data.options) ? data.options.map(String).filter(Boolean) : [],
+        options: toChatOptions(data.options),
         allowQuickApply: data.allowQuickApply === true,
       };
     } catch (error) {
@@ -961,7 +1026,7 @@ export default function Home() {
       : response && !response.allowQuickApply ? currentStage : nextStage;
     let assistantText = "";
     let assistantStage: ChatMessage["stage"] = "ready";
-    let options: string[] | undefined;
+    let options: ChatOption[] | undefined;
     let logLabel = "스타일 방향";
     if (currentStage === "place") {
       assistantText = response?.message || buildReadyMessage(keyword, planningFeedback, trend ?? "");
@@ -1246,18 +1311,18 @@ export default function Home() {
           type="button"
           onClick={() => setIsHistoryOpen((prev) => !prev)}
           disabled={history.length === 0}
-          className="rounded-none border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 transition hover:border-zinc-900 hover:text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-xl border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 transition hover:border-zinc-900 hover:text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40"
         >
           이전 기록 {history.length > 0 ? history.length : ""}
         </button>
         {isHistoryOpen && (
-          <div className="absolute left-0 top-10 z-20 w-full max-w-md overflow-hidden rounded-none border border-zinc-200 bg-white p-2 text-left shadow-2xl">
+          <div className="absolute left-0 top-10 z-20 w-full max-w-md overflow-hidden rounded-xl border border-zinc-200 bg-white p-2 text-left shadow-2xl">
             {history.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => restoreHistory(item)}
-                className="block w-full rounded-none px-3 py-2 text-left transition hover:bg-zinc-50"
+                className="block w-full rounded-xl px-3 py-2 text-left transition hover:bg-zinc-50"
               >
                 <span className="block truncate text-sm font-medium text-zinc-950">{item.keyword}</span>
                 <span className="mt-0.5 block text-xs text-zinc-500">{item.createdAt}</span>
@@ -1410,11 +1475,11 @@ export default function Home() {
                 value={keyword}
                 onChange={(event) => setKeyword(event.target.value)}
                 placeholder="예: 날짜·장소·약속·원하는 분위기를 자유롭게 입력"
-                className="flex-1 rounded-none border border-zinc-200 bg-white px-4 py-3 text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none"
+                className="flex-1 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none"
                 disabled={isBusy}
                 autoFocus
               />
-              <button type="submit" disabled={isBusy || !keyword.trim()} className="flex items-center justify-center gap-2 whitespace-nowrap rounded-none bg-zinc-950 px-5 py-3 font-medium text-white transition hover:bg-zinc-700 disabled:opacity-40">
+              <button type="submit" disabled={isBusy || !keyword.trim()} className="flex items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-zinc-950 px-5 py-3 font-medium text-white transition hover:bg-zinc-700 disabled:opacity-40">
                 {isBusy && <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />}
                 {isBusy ? "분석 중" : "생성"}
               </button>
@@ -1426,7 +1491,7 @@ export default function Home() {
           <div className="mt-6 w-full max-w-5xl">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0 text-xs text-zinc-500"><span className="font-semibold text-zinc-900">현재 요청</span> · <span className="break-keep">{keyword}</span></div>
-              <button type="button" onClick={resetForNewSearch} className="rounded-none border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 transition hover:border-zinc-900">새 검색</button>
+              <button type="button" onClick={resetForNewSearch} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 transition hover:border-zinc-900">새 검색</button>
             </div>
           </div>
         )}
@@ -1438,7 +1503,7 @@ export default function Home() {
           {screen === "chat" ? (
             <div className="flex shrink-0 items-center justify-between gap-3 px-1 text-xs text-zinc-500">
               <span className="truncate"><span className="font-semibold text-zinc-900">DDP PARK SAJANG</span> · 현재 스타일 상담</span>
-              <button type="button" onClick={resetForNewSearch} className="shrink-0 rounded-none bg-black px-3 py-2 text-xs font-medium text-white transition hover:bg-zinc-800">재검색</button>
+              <button type="button" onClick={resetForNewSearch} className="shrink-0 rounded-xl bg-black px-3 py-2 text-xs font-medium text-white transition hover:bg-zinc-800">재검색</button>
             </div>
           ) : null}
 
@@ -1469,26 +1534,33 @@ export default function Home() {
                     && !isBusy;
                   return (
                     <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                      <div className={message.role === "user" ? "max-w-[85%] bg-black px-4 py-3 text-sm leading-relaxed text-white" : "max-w-[85%] border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-relaxed text-zinc-700"}>
+                      <div className={message.role === "user" ? "max-w-[85%] rounded-2xl rounded-br-md bg-black px-4 py-3 text-sm leading-relaxed text-white" : "max-w-[85%] rounded-2xl rounded-bl-md border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-relaxed text-zinc-700"}>
                         {message.role === "assistant" && <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400">DDP PARK SAJANG · {message.stage === "weather" ? "WEATHER" : message.stage === "place" ? "CONCEPT" : message.stage === "fit" ? "FIT" : message.stage === "material" ? "MATERIAL" : "PLAN"}</p>}
                         <p className="whitespace-pre-wrap break-keep">{message.text}</p>
-                        {showApplyButton && (
-                          <button type="button" title="에이전트의 추천을 그대로 적용" onClick={() => void submitConversationFeedback("좋아")} className="mt-3 border border-zinc-300 bg-white px-3 py-2 text-xs text-zinc-600 transition hover:border-zinc-900 hover:text-black">좋아</button>
-                        )}
-                        {showOptions && (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {message.options?.map((option) => (
-                              <button
-                                key={option}
-                                type="button"
-                                onClick={() => void submitConversationFeedback(option)}
-                                className="border border-zinc-300 bg-white px-3 py-2 text-xs text-zinc-600 transition hover:border-zinc-900 hover:text-black"
-                              >
-                                {option}
-                              </button>
-                            ))}
-                          </div>
-                        )}
+                        {(showOptions || showApplyButton) && (() => {
+                          const cards = showOptions && message.options?.length
+                            ? message.options
+                            : quickApplyOptions(message.stage, keyword);
+                          return (
+                            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                              {cards.map((option) => (
+                                <button
+                                  key={option.label}
+                                  type="button"
+                                  onClick={() => void submitConversationFeedback(option.label)}
+                                  className={
+                                    option.primary
+                                      ? "consult-option consult-option-primary"
+                                      : "consult-option"
+                                  }
+                                >
+                                  <span className="block text-sm font-semibold">{option.label}</span>
+                                  {option.detail && <span className="mt-1 block text-xs leading-relaxed opacity-80 break-keep">{option.detail}</span>}
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -1496,14 +1568,14 @@ export default function Home() {
                 {isBusy && <p className="flex items-center gap-2 text-sm text-zinc-400"><span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-700" />에이전트가 컨텍스트를 정리하고 있어요...</p>}
               </div>
               <form className="style-search flex gap-2" onSubmit={(event) => { event.preventDefault(); void submitConversationFeedback(); }}>
-                <input value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={isBusy ? "분석 중..." : "원하는 소재, 색감, 핏이나 수정 의견을 말해주세요"} className="flex-1 rounded-none border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none" disabled={isBusy} />
-                <button type="submit" disabled={isBusy || !chatInput.trim()} className="rounded-none bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-40">보내기</button>
+                <input value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={isBusy ? "분석 중..." : "원하는 소재, 색감, 핏이나 수정 의견을 말해주세요"} className="flex-1 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none" disabled={isBusy} />
+                <button type="submit" disabled={isBusy || !chatInput.trim()} className="rounded-xl bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-40">보내기</button>
                 {conversationStage !== "ready" && (
-                  <button type="button" onClick={() => void submitConversationFeedback("추천해줘")} disabled={isBusy} className="rounded-none border border-zinc-300 bg-white px-4 py-3 text-sm font-medium text-zinc-700 transition hover:border-zinc-900 hover:text-black disabled:opacity-40">추천해줘</button>
+                  <button type="button" onClick={() => void submitConversationFeedback("추천해줘")} disabled={isBusy} className="rounded-xl border border-zinc-300 bg-white px-4 py-3 text-sm font-medium text-zinc-700 transition hover:border-zinc-900 hover:text-black disabled:opacity-40">추천해줘</button>
                 )}
               </form>
               {trend && !isBusy && (
-                <button type="button" onClick={() => void generateCandidates()} className="mt-3 w-full rounded-none bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800">{conversationStage === "ready" ? "5개 후보 생성하기" : "이 조건으로 5개 후보 보기"}</button>
+                <button type="button" onClick={() => void generateCandidates()} className="mt-3 w-full rounded-xl bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800">{conversationStage === "ready" ? "5개 후보 생성하기" : "이 조건으로 5개 후보 보기"}</button>
               )}
             </section>
             <aside className="flex min-h-0 max-h-64 flex-col border border-zinc-200 bg-white p-4 lg:max-h-none">
@@ -1526,7 +1598,7 @@ export default function Home() {
           {screen === "candidates" && evaluationProcess && (
             <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-200 bg-white p-4">
               <div className="mb-4 flex shrink-0 justify-end gap-2">
-                <button type="button" onClick={resetForNewSearch} className="rounded-none border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 transition hover:border-zinc-900">재검색</button>
+                <button type="button" onClick={resetForNewSearch} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 transition hover:border-zinc-900">재검색</button>
               </div>
               <div className="shrink-0 border-b border-zinc-200 pb-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">CANDIDATE RANKING</p>
@@ -1597,7 +1669,7 @@ export default function Home() {
               </div>
               <div className="mt-5 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-4">
                 <p className="text-sm text-zinc-500">{evaluationProcess.planStatus === "partial" ? "점수는 확보한 명세의 비교값입니다. 완료하지 못한 검증은 통과로 처리하지 않았어요." : "평가와 보완 과정을 실행 기록에서 확인할 수 있어요."}</p>
-                <button type="button" onClick={() => void generateSelectedLooks()} disabled={isBusy || selectedCandidateIds.length === 0} className="rounded-none bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-40">선택한 {selectedCandidateIds.length}개 룩북 보기</button>
+                <button type="button" onClick={() => void generateSelectedLooks()} disabled={isBusy || selectedCandidateIds.length === 0} className="rounded-xl bg-black px-4 py-3 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-40">선택한 {selectedCandidateIds.length}개 룩북 보기</button>
               </div>
             </section>
           )}
@@ -1605,8 +1677,8 @@ export default function Home() {
           {screen === "final" && (
             <section className="grid gap-5 lg:h-[calc(100dvh-7rem)] lg:min-h-[620px] lg:grid-cols-[minmax(0,1fr)_320px]">
               <div className="flex justify-end gap-2 lg:col-span-2">
-                <button type="button" onClick={goBackToCandidates} className="rounded-none border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 transition hover:border-zinc-900">후보 다시 고르기</button>
-                <button type="button" onClick={resetForNewSearch} className="rounded-none bg-black px-3 py-2 text-xs font-medium text-white transition hover:bg-zinc-800">재검색</button>
+                <button type="button" onClick={goBackToCandidates} className="rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-medium text-zinc-700 transition hover:border-zinc-900">후보 다시 고르기</button>
+                <button type="button" onClick={resetForNewSearch} className="rounded-xl bg-black px-3 py-2 text-xs font-medium text-white transition hover:bg-zinc-800">재검색</button>
               </div>
               <div className="min-h-0 overflow-y-auto pr-2">
                 {evaluationProcess?.planStatus === "partial" && <p role="status" className="mb-3 border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">대안 후보로 만든 룩북이에요. {(evaluationProcess.warnings ?? []).join(" ")}</p>}
@@ -1688,13 +1760,13 @@ export default function Home() {
         </main>
       )}
 
-      <button type="button" onClick={() => setIsTraceOpen(true)} className="fixed bottom-5 right-5 z-30 rounded-none border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-700 shadow-lg transition hover:border-zinc-900" aria-expanded={isTraceOpen}>Agent Trace</button>
+      <button type="button" onClick={() => setIsTraceOpen(true)} className="fixed bottom-24 right-5 z-30 rounded-xl border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-zinc-700 shadow-lg transition hover:border-zinc-900" aria-expanded={isTraceOpen}>Agent Trace</button>
       {isTraceOpen && (
         <div className="fixed inset-0 z-40 bg-black/10" onClick={() => setIsTraceOpen(false)}>
           <aside className="absolute inset-y-4 right-4 flex w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden border border-zinc-300 bg-[#f7f6f3] shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-zinc-200 bg-white px-4 py-3">
               <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-500">AGENT TRACE</p><p className="mt-1 text-sm text-zinc-700">심사용 Tool 호출·검증 진행</p></div>
-              <button type="button" onClick={() => setIsTraceOpen(false)} className="rounded-none bg-black px-3 py-2 text-xs font-medium text-white">닫기</button>
+              <button type="button" onClick={() => setIsTraceOpen(false)} className="rounded-xl bg-black px-3 py-2 text-xs font-medium text-white">닫기</button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-3"><AgentTracePanel step={step} evaluationProcess={evaluationProcess} trace={agentTrace} /></div>
           </aside>

@@ -11,31 +11,73 @@ import {
 
 type ConsultationStage = "place" | "fit" | "material";
 
-function optionsForStage(stage: ConsultationStage, keyword: string, trend: string) {
+type ConsultOption = { label: string; detail: string; primary?: boolean };
+
+/** LLM 이 선택지를 못 만들었을 때 쓰는 단계별 기본 선택지 (제목 + 코디에 미치는 영향 한 줄) */
+function optionsForStage(stage: ConsultationStage, keyword: string, trend: string, hasQuestion: boolean): ConsultOption[] {
+  const context = `${keyword} ${trend}`;
+  const formal = /결혼|장례|회의|면접|오피스|비즈니스|하객/.test(keyword);
+  const first: ConsultOption = hasQuestion
+    ? { label: "추천해줘", detail: "제가 가장 자연스러운 방향을 먼저 제안하고 이유를 말씀드릴게요.", primary: true }
+    : { label: "이대로 진행", detail: "방금 추천한 방향을 그대로 후보 5개에 반영해요.", primary: true };
   if (stage === "place") {
-    return ["추천해줘", ...(/결혼|장례|회의|면접|오피스|비즈니스/.test(keyword)
-      ? ["조금 더 편안하게", "격식을 유지해줘"]
-      : ["조금 더 차분하게", "조금 더 개성 있게"])]
-      .filter((item, index, items) => items.indexOf(item) === index);
+    return [first,
+      formal
+        ? { label: "조금 더 편안하게", detail: "격식은 지키되 재킷·구두 대신 니트·로퍼처럼 힘을 뺀 조합으로요." }
+        : { label: "조금 더 차분하게", detail: "톤을 낮추고 아이템 수를 줄여 정돈된 인상으로 맞춰요." },
+      formal
+        ? { label: "격식을 유지해줘", detail: "테일러드 아우터와 구두로 드레스코드를 분명하게 잡아요." }
+        : { label: "조금 더 개성 있게", detail: "패턴이나 포인트 컬러를 하나 넣어 눈에 띄는 요소를 만들어요." },
+    ];
   }
   if (stage === "fit") {
-    return ["추천해줘", ...(/오버|여유|편안/.test(`${keyword} ${trend}`)
-      ? ["상체만 여유 있게", "하의는 곧게 정리해줘"]
-      : ["상체를 더 여유 있게", "실루엣을 더 단정하게"])]
-      .filter((item, index, items) => items.indexOf(item) === index);
+    return [first,
+      /오버|여유|편안/.test(context)
+        ? { label: "상체만 여유 있게", detail: "아우터·상의는 세미오버, 하의는 곧게 떨어지는 핏으로 비율을 잡아요." }
+        : { label: "상체를 더 여유 있게", detail: "아우터·상의를 한 사이즈 여유 있게 두고 하의로 균형을 맞춰요." },
+      { label: "실루엣을 더 단정하게", detail: "레귤러~슬림 핏으로 실루엣을 깔끔하게 정리해요." },
+    ];
   }
-
-  const context = `${keyword} ${trend}`;
   if (/비|강수|우산|습기|방수/.test(context)) {
-    return ["추천해줘", "기능성 소재를 더해줘", "기능성보다 자연스러운 소재로"];
+    return [first,
+      { label: "기능성 소재를 더해줘", detail: "방수·발수 아우터와 젖어도 관리 쉬운 신발로 비 대비를 우선해요." },
+      { label: "자연스러운 소재로", detail: "면·울 같은 일상 소재를 유지하고 우산과 레이어링으로 대응해요." },
+    ];
   }
   if (/여름|더워|폭염|한낮/.test(context)) {
-    return ["추천해줘", "통기성 있는 소재로", "조금 더 구조적인 소재로"];
+    return [first,
+      { label: "통기성 있는 소재로", detail: "린넨·얇은 면 위주로 시원하게, 레이어는 최소로요." },
+      { label: "조금 더 구조적인 소재로", detail: "형태가 잡히는 코튼 트윌·시어서커로 단정함을 남겨요." },
+    ];
   }
   if (/겨울|추워|한파|보온/.test(context)) {
-    return ["추천해줘", "보온 레이어를 더해줘", "가볍고 얇게 조정해줘"];
+    return [first,
+      { label: "보온 레이어를 더해줘", detail: "니트 이너와 울 아우터로 보온을 확실히 챙겨요." },
+      { label: "가볍고 얇게 조정해줘", detail: "얇은 레이어 여러 겹으로 실내에서 벗기 쉽게 구성해요." },
+    ];
   }
-  return ["추천해줘", "질감과 패턴을 더해줘", "소재를 더 가볍게"];
+  return [first,
+    { label: "질감과 패턴을 더해줘", detail: "니트 조직감이나 체크·스트라이프 한 가지로 밋밋함을 덜어요." },
+    { label: "소재를 더 가볍게", detail: "무게감 있는 소재를 빼고 얇은 면·저지 위주로 가볍게 가요." },
+  ];
+}
+
+function normalizeOptions(value: unknown, fallback: ConsultOption[]): ConsultOption[] {
+  if (!Array.isArray(value)) return fallback;
+  const options = value
+    .map((item): ConsultOption | null => {
+      if (!item || typeof item !== "object") return null;
+      const record = item as Record<string, unknown>;
+      const label = typeof record.label === "string" ? sanitizeCoreText(record.label).trim() : "";
+      const detail = typeof record.detail === "string" ? sanitizeCoreText(record.detail).trim() : "";
+      if (!label || label.length > 24 || !detail || detail.length > 80) return null;
+      return { label, detail };
+    })
+    .filter((item): item is ConsultOption => item !== null)
+    .slice(0, 3);
+  if (options.length < 2) return fallback;
+  // 첫 번째는 항상 '추천 수락' 성격의 기본 선택지로 고정
+  return [fallback[0], ...options.filter((option) => option.label !== fallback[0].label).slice(0, 2)];
 }
 
 function asText(value: unknown, fallback = "") {
@@ -120,7 +162,8 @@ export async function POST(req: Request) {
           {
             role: "system",
             content:
-              "너는 DDP PARK SAJANG의 한국어 퍼스널 스타일링 상담 Tool이야. 응답은 반드시 JSON 객체로 바로 시작하고 JSON 객체 하나만 반환해: {\"reply\": \"실제 한국어 답변\", \"question\": \"실제 한국어 질문 또는 빈 문자열\"}. " +
+              "너는 DDP PARK SAJANG의 한국어 퍼스널 스타일링 상담 Tool이야. 응답은 반드시 JSON 객체로 바로 시작하고 JSON 객체 하나만 반환해: {\"reply\": \"실제 한국어 답변\", \"question\": \"실제 한국어 질문 또는 빈 문자열\", \"options\": [{\"label\": \"선택지 제목(4~12자)\", \"detail\": \"이 선택이 코디에 주는 변화 한 줄(20~50자)\"}, ...]}. " +
+              "options는 정확히 2개: question이 있으면 그 질문에 대한 서로 다른 답 2개, question이 없으면 방금 추천과 다른 방향의 대안 2개. 각 detail은 어떤 아이템·핏·소재가 어떻게 달라지는지 구체적으로 써. " +
               "JSON 예시의 타입 표기(string 등)를 그대로 출력하지 말고, 분석 과정·생각 과정·작성 메모도 출력하지 마. reply는 핵심 추천과 사용자 요구 반영을 1~2문장으로, question은 짧은 확인 질문 1문장으로 작성해. 전체 답변은 최대 2문장으로 끝내. " +
               CORE_GARMENT_POLICY + " " +
               "첫 문장에서 이번 사용자 요청에 바로 답해. '말씀하신 방향을 반영할게요', '상황에 맞게 추천할게요'로 끝내지 말고 어떤 옷을 어떻게 조합할지 말해. " +
@@ -164,9 +207,10 @@ export async function POST(req: Request) {
     const message = [reply, question].filter(Boolean).join(" ").trim();
     if (!message) throw new Error("상담 응답이 비어 있습니다.");
     agentLog("trend", `스타일 상담 Tool 완료: ${stage}`);
+    const fallbackOptions = optionsForStage(stage, keyword, trend, Boolean(question));
     return NextResponse.json({
       message,
-      options: question ? optionsForStage(stage, keyword, trend) : [],
+      options: normalizeOptions(parsed.options, fallbackOptions),
       allowQuickApply: !question,
       responseSource: usedDirectReply ? "local_recommendation" : "model",
     });
@@ -176,7 +220,7 @@ export async function POST(req: Request) {
     if (fallbackInput) {
       return NextResponse.json({
         message: buildDirectConsultationReply(fallbackInput),
-        options: [],
+        options: optionsForStage(fallbackInput.stage, fallbackInput.keyword, fallbackInput.trend ?? "", false),
         allowQuickApply: true,
         degraded: true,
         responseSource: "local_recommendation",

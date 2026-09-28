@@ -33,3 +33,6 @@ yarn-error.log*
 
 # Isolated validation output
 /.next-quality/
+
+# --- local data (catalog csv/index) ---
+/data/

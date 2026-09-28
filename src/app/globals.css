@@ -136,7 +136,7 @@ body {
 }
 
 .style-search {
-  border: 1px solid #d8d5cf;
+  border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.8);
   padding: 0.55rem;
   box-shadow: 0 14px 34px rgba(22, 22, 22, 0.08);
@@ -153,33 +153,96 @@ body {
   transform: scaleX(1.04);
 }
 
-.retro-page main > div,
-.retro-page main > section > div,
-.retro-page main aside,
+:root {
+  /* 결과 화면 공용 토큰 — 카드/경계선/모서리 */
+  --card: #ffffff;
+  --card-soft: #f3f1ec;
+  --card-softer: #eae7e0;
+  --line: #d6d1c6;
+  --line-strong: #bdb6a8;
+  --ink: #171717;
+  --ink-muted: #5f5f5a;
+  --radius-card: 18px;
+  --radius-box: 12px;
+  --radius-control: 10px;
+  --shadow-card: 0 1px 2px rgba(23, 23, 23, 0.04), 0 14px 32px rgba(26, 26, 26, 0.07);
+  --shadow-box: 0 1px 1px rgba(23, 23, 23, 0.03);
+}
+
+/* 1) 최상위 카드: 테두리를 가진 최상위 박스만 흰 배경 + 또렷한 테두리 + 그림자로 배경에서 분리
+   (레이아웃용 래퍼 div 는 제외해서 빈 카드가 생기지 않게) */
+.retro-page main > div[class~="border"],
+.retro-page main > section[class~="border"],
+.retro-page main > div > section[class~="border"],
+.retro-page main > section > div[class~="border"],
+.retro-page main aside[class~="border"],
 .retro-page main .rounded-lg.border {
-  border-color: #dedbd4;
-  background-color: rgba(255, 255, 255, 0.82);
-  color: #171717;
-  box-shadow: 0 18px 38px rgba(26, 26, 26, 0.045);
+  border-color: var(--line);
+  background-color: var(--card);
+  color: var(--ink);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--radius-card);
 }
 
+/* 2) 안쪽 박스: 흰색과 연한 베이지를 구분해 위계가 보이게 (예전엔 둘 다 같은 색으로 덮어써서 경계가 사라졌음) */
 .retro-page main .bg-white,
-.retro-page main .bg-zinc-50,
-.retro-page main .dark\:bg-zinc-950,
-.retro-page main .dark\:bg-zinc-900 {
-  background-color: #f7f6f3;
+.retro-page main .dark\:bg-zinc-950 {
+  background-color: var(--card);
 }
 
+.retro-page main .bg-zinc-50,
+.retro-page main .bg-zinc-100,
+.retro-page main .dark\:bg-zinc-900 {
+  background-color: var(--card-soft);
+}
+
+.retro-page main .border-zinc-200,
+.retro-page main .dark\:border-zinc-800 {
+  border-color: var(--line);
+}
+
+.retro-page main .border-zinc-300,
+.retro-page main .dark\:border-zinc-700 {
+  border-color: var(--line-strong);
+}
+
+/* 3) 모서리: 완전한 테두리가 있는 박스만 둥글게 (구분선 border-b/border-l 은 제외) */
+.retro-page main [class~="border"]:not(.rounded-full) {
+  border-radius: var(--radius-box);
+}
+
+.retro-page main button:not(.rounded-full),
+.retro-page main input,
+.retro-page main textarea,
+.retro-page main select {
+  border-radius: var(--radius-control);
+}
+
+.retro-page main .rounded-2xl {
+  border-radius: 18px;
+}
+
+.retro-page main .rounded-full {
+  border-radius: 9999px;
+}
+
+.retro-page main img {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-box);
+  background: var(--card-soft);
+}
+
+/* 4) 텍스트 톤 */
 .retro-page main .text-black,
 .retro-page main .dark\:text-zinc-50 {
-  color: #171717;
+  color: var(--ink);
 }
 
 .retro-page main .text-zinc-500,
 .retro-page main .text-zinc-600,
 .retro-page main .text-zinc-700,
 .retro-page main .dark\:text-zinc-300 {
-  color: #5f5f5a;
+  color: var(--ink-muted);
 }
 
 .retro-page main .text-violet-400,
@@ -188,12 +251,12 @@ body {
 .retro-page main .text-violet-700,
 .retro-page main .dark\:text-violet-300,
 .retro-page main .dark\:text-violet-400 {
-  color: #171717;
+  color: var(--ink);
 }
 
 .retro-page main .bg-violet-100,
 .retro-page main .dark\:bg-violet-950 {
-  background-color: #171717;
+  background-color: var(--ink);
 }
 
 .retro-page main .bg-violet-100.text-violet-700,
@@ -206,15 +269,45 @@ body {
   letter-spacing: -0.02em;
 }
 
-.retro-page main a,
-.retro-page main button {
-  border-radius: 0;
+/* 5) 상담 선택지 카드 */
+.consult-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-box);
+  background: var(--card);
+  color: var(--ink);
+  padding: 0.7rem 0.85rem;
+  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
-.retro-page main img {
-  border: 1px solid #dedbd4;
-  border-radius: 0;
-  background: #f8f7f4;
+.consult-option:hover {
+  border-color: var(--ink);
+  background: #fbfaf8;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(26, 26, 26, 0.08);
+}
+
+.consult-option-primary {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: #ffffff;
+}
+
+.consult-option-primary:hover {
+  background: #2a2a2a;
+  border-color: #2a2a2a;
+}
+
+/* 6) 검색·입력 박스도 같은 모서리 언어로 */
+.style-search {
+  border-radius: 16px;
+}
+
+.style-search input,
+.style-search button {
+  border-radius: var(--radius-control);
 }
 
 @media (max-width: 720px) {
