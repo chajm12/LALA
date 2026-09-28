@@ -674,6 +674,7 @@ export default function Home() {
   const [openScoreIndex, setOpenScoreIndex] = useState<number | null>(null);
   const [refiningIndex, setRefiningIndex] = useState<number | null>(null);
   const [lookbookStartedAt, setLookbookStartedAt] = useState<number | null>(null);
+  const [busyTick, setBusyTick] = useState(0);
   const [lookbookElapsedMs, setLookbookElapsedMs] = useState(0);
   const resultsRef = useRef<HTMLElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -681,6 +682,13 @@ export default function Home() {
   const [shoppingRequests] = useState(createShoppingRequestRegistry);
 
   useEffect(() => () => shoppingRequests.cancelAll(), [shoppingRequests]);
+
+  // 상담 대기 중 상태 문구 순환
+  useEffect(() => {
+    if (!isBusy) return;
+    const timer = window.setInterval(() => setBusyTick((tick) => tick + 1), 1800);
+    return () => window.clearInterval(timer);
+  }, [isBusy]);
 
   // 룩북 생성 중 경과 시간 (플레이스홀더에 표시)
   useEffect(() => {
@@ -1595,7 +1603,19 @@ export default function Home() {
                     </div>
                   );
                 })}
-                {isBusy && <p className="flex items-center gap-2 text-sm text-zinc-400"><span className="h-3 w-3 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-700" />에이전트가 컨텍스트를 정리하고 있어요...</p>}
+                {isBusy && (() => {
+                  const phrases = conversationStage === "ready" || chatMessages.length > 2
+                    ? ["답변을 읽고 있어요", "장소·날씨 조건과 맞춰보고 있어요", "추천 방향을 정리하고 있어요"]
+                    : ["요청을 해석하고 있어요", "날짜·장소의 날씨를 확인하고 있어요", "스타일 컨텍스트를 정리하고 있어요"];
+                  return (
+                    <div className="flex justify-start" role="status" aria-live="polite">
+                      <div className="thinking-bubble">
+                        <span className="thinking-dots" aria-hidden="true"><i /><i /><i /></span>
+                        <span key={busyTick % phrases.length} className="thinking-text">{phrases[busyTick % phrases.length]}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
               <form className="style-search flex gap-2" onSubmit={(event) => { event.preventDefault(); void submitConversationFeedback(); }}>
                 <input value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={isBusy ? "분석 중..." : "원하는 소재, 색감, 핏이나 수정 의견을 말해주세요"} className="flex-1 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-950 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none" disabled={isBusy} />

@@ -300,6 +300,52 @@ body {
   background: #fbfaf8;
 }
 
+/* 5-2) 상담 대기 말풍선: 점 세 개가 튀고 상태 문구가 교체됨 */
+.thinking-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: 85%;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 18px 18px 18px 6px;
+  background: var(--card-soft);
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+.thinking-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.thinking-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ink);
+  opacity: 0.35;
+  animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+
+.thinking-dots i:nth-child(2) { animation-delay: 0.15s; }
+.thinking-dots i:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes thinking-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
+.thinking-text {
+  display: inline-block;
+  animation: thinking-fade 400ms ease-out;
+}
+
+@keyframes thinking-fade {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* 6) 후보 카드: 선택 시 베이지 배경 + 검은 테두리 + 체크 표시 */
 .candidate-card {
   position: relative;
