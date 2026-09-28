@@ -41,14 +41,17 @@ function locationCandidates(raw: string) {
   const simplified = normalized
     .replace(/(카페|식당|결혼식장|회의실|공원|해변|역)\s*$/g, "")
     .trim();
-  return [...new Set([normalized, simplified].filter(Boolean))];
+  const koreanSeoulContext = /[가-힣]/.test(simplified) && !/대한민국|한국|서울/.test(simplified)
+    ? [`${simplified}, Seoul, South Korea`, `${simplified}, South Korea`]
+    : [];
+  return [...new Set([normalized, ...koreanSeoulContext, simplified].filter(Boolean))];
 }
 
 async function geocode(location: string) {
   for (const candidate of locationCandidates(location)) {
     const url = new URL("https://geocoding-api.open-meteo.com/v1/search");
     url.searchParams.set("name", candidate);
-    url.searchParams.set("count", "1");
+    url.searchParams.set("count", "10");
     url.searchParams.set("language", "ko");
     url.searchParams.set("format", "json");
 
@@ -72,7 +75,7 @@ async function geocode(location: string) {
         timezone?: string;
       }>;
     };
-    const result = data.results?.[0];
+    const result = data.results?.find((item) => item.country === "대한민국") ?? data.results?.[0];
     if (result?.latitude !== undefined && result.longitude !== undefined) {
       return {
         query: candidate,

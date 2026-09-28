@@ -68,6 +68,68 @@ function toStringArray(value: unknown, splitString = false) {
   return [];
 }
 
+function toOutfitItems(value: unknown) {
+  const splitEntry = (entry: string) => {
+    const trimmed = entry.trim();
+    if (!trimmed) return [];
+    const categoryWords = trimmed.match(/자켓|재킷|블루종|코트|셔츠|티셔츠|니트|후드티|후드|맨투맨|폴로|팬츠|슬랙스|데님|청바지|스커트|치마|쇼츠|스니커즈|운동화|러닝화|로퍼|부츠|구두|샌들|가방|백|시계|벨트|모자|캡|비니/g) ?? [];
+    if (!trimmed.includes(":") && categoryWords.length >= 2) return categoryWords;
+    return [trimmed];
+  };
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (item && typeof item === "object") {
+        return Object.values(item as Record<string, unknown>).flatMap((entry) => splitEntry(String(entry)));
+      }
+      return splitEntry(String(item));
+    }).filter((item) => item && item !== "[object Object]");
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .flatMap(([key, entry]) => splitEntry(`${key}: ${String(entry)}`));
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value.split(/[,\n·|/]+/).flatMap(splitEntry).filter(Boolean);
+  }
+  return [];
+}
+
+function labelOutfitItem(item: string) {
+  if (item.includes(":")) return item;
+  if (/자켓|재킷|블루종|코트|오버셔츠|베스트/.test(item)) return `아우터: ${item}`;
+  if (/팬츠|슬랙스|데님|청바지|스커트|치마|쇼츠/.test(item)) return `하의: ${item}`;
+  if (/스니커즈|운동화|러닝화|로퍼|부츠|구두|샌들/.test(item)) return `신발: ${item}`;
+  if (/가방|백|시계|벨트|모자|캡|비니/.test(item)) return `액세서리: ${item}`;
+  return `상의: ${item}`;
+}
+
+function normalizeOutfitItems(item: Record<string, unknown>, index: number) {
+  const raw = toOutfitItems(
+    item.outfitItems ?? item.outfit ?? item.keyItems ?? item.lookItems ?? item.items,
+  ).map(labelOutfitItem);
+  const context = Object.values(item)
+    .flatMap((value) => Array.isArray(value) ? value.map(String) : typeof value === "string" ? [value] : [])
+    .join(" ");
+  const fallbackSets = [
+    ["상의: 브러시드 코튼 셔츠", "하의: 세미와이드 팬츠", "신발: 미니멀 러닝화"],
+    ["상의: 메리노 니트", "하의: 스트레이트 팬츠", "신발: 스웨이드 스니커즈"],
+    ["상의: 옥스포드 셔츠", "하의: 테이퍼드 팬츠", "신발: 클래식 로퍼"],
+    ["상의: 컴팩트 스웨트셔츠", "하의: 릴랙스드 팬츠", "신발: 레트로 스니커즈"],
+    ["상의: 가벼운 폴로 니트", "하의: 와이드 팬츠", "신발: 가죽 스니커즈"],
+  ];
+  const inferred = [
+    context.match(/(?:셔츠|티셔츠|니트|후드티|후드|맨투맨|블라우스|폴로)[^,\n]*/)?.[0],
+    context.match(/(?:팬츠|슬랙스|데님|청바지|스커트|치마|쇼츠)[^,\n]*/)?.[0],
+    context.match(/(?:스니커즈|운동화|로퍼|부츠|구두|샌들)[^,\n]*/)?.[0],
+  ].filter((value): value is string => Boolean(value)).map((value, itemIndex) =>
+    `${["상의", "하의", "신발"][itemIndex]}: ${value.trim()}`,
+  );
+  const rawReady = raw.length >= 3 ? raw : [...raw, ...inferred.map(labelOutfitItem), ...fallbackSets[index % fallbackSets.length]];
+  return rawReady
+    .filter((value, itemIndex, items) => value && items.indexOf(value) === itemIndex)
+    .slice(0, 6);
+}
+
 function cleanConceptDescription(value: unknown) {
   return String(value ?? "")
     .replace(/\s*로\s+(?:남성|여성)\s*\d+안(?:을|를)?\s*제안해요\.?/g, "룩을 제안해요.")
@@ -87,7 +149,7 @@ function normalizeConcepts(value: unknown, referenceConcepts: Concept[] = []) {
       colorPalette: toStringArray(item.colorPalette),
       targetCustomer: String(item.targetCustomer ?? "남성"),
       materials: toStringArray(item.materials),
-      outfitItems: toStringArray(item.outfitItems, true),
+      outfitItems: normalizeOutfitItems(item, index),
       bodyProfile: String(item.bodyProfile ?? ""),
       fitStrategy: String(item.fitStrategy ?? ""),
       stylingReason: String(item.stylingReason ?? ""),
@@ -162,15 +224,46 @@ function candidateSimilaritySummary(concepts: Concept[]) {
   return { maximum, pairs: pairs.length ? pairs : ["후보 간 유사도가 기준 이하입니다."] };
 }
 
+function directUserRequestText(keyword: string) {
+  return keyword
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*-?\s*에이전트 추천 반영\s*:/i.test(line))
+    .join("\n")
+    .trim();
+}
+
+const COLOR_ALIASES: Record<string, string[]> = {
+  올리브: ["올리브", "그린", "포레스트", "딥 그린"],
+  그린: ["그린", "올리브", "포레스트", "딥 그린"],
+  차콜: ["차콜", "차콜 그레이"],
+  그레이: ["그레이", "회색", "차콜", "멜란지"],
+  크림: ["크림", "아이보리", "오프화이트"],
+  아이보리: ["아이보리", "크림", "오프화이트"],
+  핑크: ["핑크", "로즈", "베이비 핑크"],
+  블루: ["블루", "파란", "페이디드 블루", "딥 블루"],
+};
+
+function avoidedColorTerms(keyword: string) {
+  return Object.keys(COLOR_ALIASES).filter((term) => termRejected(keyword, term));
+}
+
+function replaceAvoidedColors(value: string, avoided: string[], replacement: string) {
+  return avoided.reduce(
+    (result, term) => COLOR_ALIASES[term].reduce((text, alias) => text.replaceAll(alias, replacement), result),
+    value,
+  );
+}
+
 function scoreUserRequestFit(keyword: string, concept: Concept) {
-  const conceptText = `${concept.mood} ${concept.fitStrategy} ${concept.materials.join(" ")} ${concept.outfitItems.join(" ")}`;
+  const requestText = directUserRequestText(keyword);
+  const conceptText = `${concept.name} ${concept.description} ${concept.mood} ${concept.colorPalette.join(" ")} ${concept.fitStrategy} ${concept.materials.join(" ")} ${concept.outfitItems.join(" ")}`;
   const requestedTerms = [
     "데님", "청바지", "슬랙스", "체크", "스트라이프", "가죽", "레더", "니트", "후드", "셔츠", "티셔츠",
     "스니커즈", "로퍼", "모자", "악세사리", "액세서리", "가방", "블라우스", "맨투맨", "오버핏", "세미오버", "슬림", "와이드", "테이퍼드", "캐주얼", "포멀", "스트릿", "시티보이",
-    "블랙", "화이트", "흰색", "베이지", "네이비", "브라운", "그린", "버건디",
+    "블랙", "화이트", "흰색", "베이지", "네이비", "브라운", "그린", "올리브", "차콜", "그레이", "크림", "아이보리", "핑크", "블루", "버건디",
   ];
-  const activeTerms = requestedTerms.filter((term) => keyword.includes(term) && !termRejected(keyword, term));
-  const avoidedTerms = requestedTerms.filter((term) => termRejected(keyword, term));
+  const activeTerms = requestedTerms.filter((term) => requestText.includes(term) && !termRejected(requestText, term));
+  const avoidedTerms = requestedTerms.filter((term) => termRejected(requestText, term));
   const aliases: Record<string, string[]> = {
     흰색: ["흰색", "화이트", "오프화이트", "아이보리"],
     화이트: ["흰색", "화이트", "오프화이트", "아이보리"],
@@ -186,7 +279,7 @@ function scoreUserRequestFit(keyword: string, concept: Concept) {
     베이지: ["베이지", "샌드", "토프", "크림"],
     네이비: ["네이비", "잉크", "딥 블루"],
     브라운: ["브라운", "토프", "카멜"],
-    그린: ["그린", "올리브", "포레스트", "딥 그린"],
+    ...COLOR_ALIASES,
     버건디: ["버건디", "와인", "딥 레드"],
     모자: ["모자", "캡", "볼캡", "비니", "버킷"],
     악세사리: ["액세서리", "악세사리", "주얼리", "가방", "백", "벨트", "시계", "스카프"],
@@ -308,13 +401,15 @@ type BottomConstraint = {
 };
 
 function termRejected(text: string, term: string) {
-  const negativeMarkers = ["보다", "보단", "말고", "대신", "싫", "피하", "제외", "원하지"];
-  return negativeMarkers.some((marker) =>
-    text.includes(`${term}${marker}`)
-      || text.includes(`${term} ${marker}`)
-      || text.includes(`${marker}${term}`)
-      || text.includes(`${marker} ${term}`),
-  );
+  const normalizedText = text.replace(/\s+/g, "");
+  const normalizedTerm = term.replace(/\s+/g, "");
+  const termIndex = normalizedText.indexOf(normalizedTerm);
+  if (termIndex < 0) return false;
+  const negativeMarkers = ["보다", "보단", "말고", "대신", "싫", "안좋", "좋아하지", "빼", "피하", "제외", "원하지"];
+  return negativeMarkers.some((marker) => {
+    const markerIndex = normalizedText.indexOf(marker);
+    return markerIndex >= 0 && Math.abs(markerIndex - termIndex) <= 14;
+  });
 }
 
 function extractBottomConstraint(keyword: string): BottomConstraint | null {
@@ -338,8 +433,9 @@ function applyUserConstraints(candidates: Concept[], keyword: string) {
   // Keep inferred intent out of hard-constraint enforcement. It can guide the
   // model, but it must not make a candidate fail when the user never asked for
   // that specific item or style word.
-  const requestText = keyword;
+  const requestText = directUserRequestText(keyword);
   const bottom = extractBottomConstraint(requestText);
+  const avoidedColors = avoidedColorTerms(requestText);
   const whiteShoeRequested = /(?:신발|스니커즈|운동화|슈즈)[^\n,.]{0,24}(?:흰색|화이트|오프화이트)|(?:흰색|화이트|오프화이트)[^\n,.]{0,24}(?:신발|스니커즈|운동화|슈즈)/.test(requestText);
   const requestedTop = /(?:티셔츠|반팔|후드티|후디|맨투맨|셔츠|블라우스)/.test(requestText);
   const topLabel = /후드티|후디/.test(requestText)
@@ -356,8 +452,11 @@ function applyUserConstraints(candidates: Concept[], keyword: string) {
   const streetRequested = /스트릿|스트리트/.test(requestText)
     && !termRejected(requestText, "스트릿")
     && !termRejected(requestText, "스트리트");
-  if (!bottom && !whiteShoeRequested && !requestedTop && !hatRequested && !accessoryRequested && !streetRequested) return candidates;
+  if (!bottom && !whiteShoeRequested && !requestedTop && !hatRequested && !accessoryRequested && !streetRequested && !avoidedColors.length) return candidates;
   return candidates.map((concept, index) => {
+    const replacementColors = ["차콜", "브라운", "네이비", "크림", "버건디"]
+      .filter((color) => !avoidedColors.includes(color));
+    const replacementColor = replacementColors[index % Math.max(1, replacementColors.length)] ?? "네이비";
     const option = bottom?.mode === "alternatives"
       ? bottom.options[index < Math.ceil(candidates.length / bottom.options.length) ? 0 : 1] ?? bottom.options[index % bottom.options.length]
       : bottom?.options[0];
@@ -366,7 +465,9 @@ function applyUserConstraints(candidates: Concept[], keyword: string) {
       : option === "슬랙스"
         ? `하의: ${["차콜", "블랙", "그레이", "브라운", "딥 네이비"][index % 5]} ${index % 2 ? "와이드" : "스트레이트"} 슬랙스`
         : "";
-    const outfitItems = concept.outfitItems.filter((item) => !bottom || !/하의|팬츠|바지|데님|슬랙스|슬랙|스커트|치마|쇼츠/.test(item));
+    const outfitItems = concept.outfitItems
+      .filter((item) => !bottom || !/하의|팬츠|바지|데님|슬랙스|슬랙|스커트|치마|쇼츠/.test(item))
+      .map((item) => replaceAvoidedColors(item, avoidedColors, replacementColor));
     if (requestedTop) {
       const topIndex = outfitItems.findIndex((item) => /이너|상의|셔츠|티셔츠|니트|후드|맨투맨|블라우스/.test(item));
       const topItem = `상의: ${["오프화이트", "멜란지 그레이", "딥 네이비", "페이디드 블루", "버터 옐로"][index % 5]} ${topLabel}`;
@@ -395,25 +496,37 @@ function applyUserConstraints(candidates: Concept[], keyword: string) {
     if (bottomItem) outfitItems.push(bottomItem);
     return {
       ...concept,
+      name: replaceAvoidedColors(concept.name, avoidedColors, replacementColor),
+      description: replaceAvoidedColors(concept.description, avoidedColors, replacementColor),
+      mood: replaceAvoidedColors(concept.mood, avoidedColors, replacementColor),
+      colorPalette: concept.colorPalette.map((color) => replaceAvoidedColors(color, avoidedColors, replacementColor)),
       outfitItems: [...new Set(outfitItems)],
       materials: [...new Set([
-        ...concept.materials,
+        ...concept.materials.map((material) => replaceAvoidedColors(material, avoidedColors, replacementColor)),
         option === "데님" ? "데님" : option === "슬랙스" ? "드라이 울 혼방" : "",
       ].filter(Boolean))],
       stylingReason: bottom
         ? `사용자 요청에 따라 ${option} 하의를 고정하고 나머지 상의·아우터·신발·디테일을 후보별로 변주했습니다. ${concept.stylingReason}`
-        : concept.stylingReason,
+        : replaceAvoidedColors(concept.stylingReason, avoidedColors, replacementColor),
     };
   });
 }
 
 function buildUserIntentContract(keyword: string) {
-  const feedbackLines = keyword
+  const requestText = directUserRequestText(keyword);
+  const feedbackLines = requestText
     .split("\n")
     .filter((line) => line.trim().startsWith("-"))
     .map((line) => line.replace(/^\s*-\s*/, "").trim())
     .filter(Boolean);
-  const avoidLines = [...keyword.matchAll(/[^\n,.!?]*?(?:싫어|피해|피하고|원하지|제외|금지|말고|않고)[^\n,.!?]*/gi)]
+  const acceptedAgentRecommendations = keyword
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*-\s*/, "").trim())
+    .filter((line) => /^에이전트 추천 반영\s*:/i.test(line))
+    .map((line) => line.replace(/^에이전트 추천 반영\s*:\s*/i, ""))
+    .filter(Boolean);
+  const directFeedbackLines = feedbackLines.filter((line) => !/^에이전트 추천 반영\s*:/i.test(line));
+  const avoidLines = [...requestText.matchAll(/[^\n,.!?]*?(?:싫어|안좋아|좋아하지|빼|피해|피하고|원하지|제외|금지|말고|않고)[^\n,.!?]*/gi)]
     .map((match) => match[0].trim())
     .filter(Boolean);
   const bottom = extractBottomConstraint(keyword);
@@ -423,7 +536,10 @@ function buildUserIntentContract(keyword: string) {
     "2. 날짜·실제 날씨·약속 종류·장소 무드",
     "3. 성별·키·몸무게에 따른 현실적인 비율과 기장",
     "4. 패션 레퍼런스의 스타일 신호",
-    feedbackLines.length ? `직접 받은 피드백: ${feedbackLines.join(" / ")}` : "직접 받은 추가 피드백: 없음",
+    directFeedbackLines.length ? `직접 받은 피드백: ${directFeedbackLines.join(" / ")}` : "직접 받은 추가 피드백: 없음",
+    acceptedAgentRecommendations.length
+      ? `사용자가 승인한 에이전트 추천: ${acceptedAgentRecommendations.join(" / ")}`
+      : "승인한 에이전트 추천: 없음",
     avoidLines.length ? `명시적으로 피할 요소: ${avoidLines.join(" / ")}` : "명시적으로 피할 요소: 없음",
     bottom
       ? `하의 제약조건: ${bottom.mode === "all" ? `${bottom.options[0]} 하의를 모든 후보에 적용` : `${bottom.options.join(" / ")} 하의를 후보 그룹으로 나누어 모두 제시`}`
@@ -557,7 +673,6 @@ function localEvaluateCandidates(
   candidates: Concept[],
   weather: WeatherSnapshot | null,
   round: 1 | 2,
-  intentSummary = "",
 ) {
   const formalRequest = /결혼|장례|회의|면접|오피스|비즈니스/.test(keyword);
   const relaxedRequest = /카페|데이트|여행|공원|놀이|방탈출|lp\s*바/i.test(keyword);
@@ -632,7 +747,7 @@ function localEvaluateCandidates(
     } satisfies SubjectiveEvaluation;
   });
   agentLog("evaluate", `${round}차 로컬 Subjective 평가 완료`, "local heuristic + objective verifier");
-  return scoreEvaluations(subjective, candidates, weather, round, keyword, intentSummary);
+  return scoreEvaluations(subjective, candidates, weather, round, keyword);
 }
 
 function scoreEvaluations(
@@ -641,7 +756,6 @@ function scoreEvaluations(
   weather: WeatherSnapshot | null,
   round: 1 | 2,
   keyword: string,
-  intentSummary = "",
 ) {
   const objective = runObjectiveVerifiers(candidates, weather);
 
@@ -652,7 +766,10 @@ function scoreEvaluations(
 
   return subjective.map((item) => {
     const scores = objective.get(item.id);
-    const requestScore = scoreUserRequestFit(`${keyword}\n${intentSummary}`, candidates.find((candidate) => candidate.id === item.id) ?? candidates[0]);
+    // Only the user's request and explicit feedback are hard constraints.
+    // The intent agent may infer useful context, but it must not lower every
+    // candidate when its inferred fields are not represented verbatim.
+    const requestScore = scoreUserRequestFit(keyword, candidates.find((candidate) => candidate.id === item.id) ?? candidates[0]);
     const weatherScore = scoreOrFallback(scores?.weather.score);
     const colorScore = scoreOrFallback(scores?.color.score);
     const diversityScore = scoreOrFallback(scores?.diversity.score);
@@ -730,7 +847,7 @@ Evaluation 필드: id, name, placeScore, bodyFitScore, trendScore, practicalityS
   }
   return {
     candidates: candidateBase,
-    evaluations: scoreEvaluations(subjective, candidateBase, weather, 2, keyword, intentSummary),
+    evaluations: scoreEvaluations(subjective, candidateBase, weather, 2, keyword),
   };
 }
 
@@ -770,7 +887,7 @@ export async function POST(req: Request) {
 
     agentLog("evaluate", "1차 후보 평가 Tool 시작", "local heuristic + objective verifier");
     const round1 = rankEvaluations(
-      localEvaluateCandidates(keyword, trend, originalCandidates, weatherSnapshot, 1, intentSummary),
+      localEvaluateCandidates(keyword, trend, originalCandidates, weatherSnapshot, 1),
     );
     if (round1.length < 5) throw new Error("1차 후보 평가에 실패했어요.");
     agentLog("evaluate", "1차 후보 평가 완료");
